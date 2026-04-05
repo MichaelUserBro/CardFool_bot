@@ -1,996 +1,1145 @@
-﻿// ToDo List
-// 1) Реализовать механику отказа от защиты и взятие карт сразу
-// 2) Провести renaming
-// 3) Избавится от ИИ кода
-// 4) Разобраться с функцией Федоса
-// 5) Провести оптимизацию кода
-// 6) Исправить логику GetLostPairPenalty()
-// 7) Разделить GetStageCoef() и другие общие функции на копии друг друга для разных дейсвтий
-// 8) Оптимизировать убогие функции
-// 9) Разобраться с GetSuccessBuff. Уменьшает винрейт на 5%
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-
-
-
-using System.Collections;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System;
 
 namespace CardFool
 {
-    public class MPlayer1
+    // ================================================================
+    //  BotConfig — все коэффициенты и константы в одном месте
+    // ================================================================
+
+    /// <summary>
+    /// Все коэффициенты и константы бота в одном месте.
+    /// Значения не изменены, только именованы для читаемости.
+    /// </summary>
+    public static class BotConfig
     {
-        private string Name = "ЕКБ 2.1";
-        private List<SCard> hand = new List<SCard>();
-        public List<SCard> oppHand = new List<SCard>();
-        public List<SCard> remainingDeck = new List<SCard>();
+        // --- Коэффициенты стадий игры (GetStageCoef) ---
+        public const double EarlyGameCoef = 1488;
+        public const double MidGameCoef = 9.11;
+        public const double LateGameCoef = 67;
+        public const double SuperLateCoef = 0.228;
 
-        private Suits trumpSuit;
+        public const int EarlyGameThreshold = 17; // > 17 карт в колоде — early
+        public const int MidGameThreshold = 9;  // 9-16 карт — mid
+                                                // 1-8 карт — late
+                                                // 0 карт — super late
 
-        private int remainingDeckCount = 24;
-        private int countOfEnemyCards = 6;
+        // --- Коэффициент желания выбрасывать пары/тройки в конце (GetSaveGameCoef) ---
+        public const double SaveGameCoef = 4.0;
+        public const double SaveGameCoefDefault = 1.0;
+        public const int SaveGameHandThreshold = 4;
 
-        private bool isIAttack;
+        // --- Формула скоринга атаки ---
+        public const double AttackNoSuitBase = 2.65;
+        public const double AttackThrowNoSuit = 2.65;
 
+        // --- Баффы атаки ---
+        public const int PairBuff = 13;
+        public const int TrioBuff = 23;
 
-        // Всякая Хуйня (яйца)
+        // --- Бафф за дешевизну хода (GetCheapMoveBuff) ---
+        public const double CheapMoveBase = 1.5;
+        public const double CheapMoveMult = 30;
 
-        public string GetName()
+        // --- Штраф если противник не может отбить (GetSuccessBuff) ---
+        public const double SuccessFailPenalty = -100.0;
+
+        // --- Штраф за последнюю карту масти (GetLastCardPenalty) ---
+        public const int LastCardPenaltyValue = 10;
+        public const int LastCardRankThreshold = 8;
+
+        // --- Бафф за масть, которой нет у противника (GetNoSuitBuff) ---
+        public const int NoSuitBuff = 5;
+        public const int NoSuitEnemyThreshold = 3;
+
+        // --- Бафф за кол-во карт на руке (GetCardOnHandBuff) ---
+        public const int HandBuff_Small = 30;
+        public const int HandBuff_Medium = 1;
+        public const int HandBuff_Large = 15;
+        public const int HandBuff_XLarge = 30;
+
+        public const int HandThreshold_Small = 6;
+        public const int HandThreshold_Medium = 9;
+        public const int HandThreshold_Large = 13;
+
+        // --- Скоринг подброса ---
+        public const double ThrowScoreBase = 2.5;
+        public const double GiveScoreBase = 2.5;
+
+        // --- Пороги решения "делать ход или нет" ---
+        public const int ThrowDecisionBoard = 20;
+        public const int DefDecisionBoard = 20;
+
+        // --- Скоринг защиты ---
+        public const int SuccessfulDefBuff = 30;
+        public const double EnemyTrumpPenMult = 0.7;
+        public const double DefNoSuitBase = 2.0;
+
+        // --- Бафф оптимальности защиты (GetDefOptimalBuff) ---
+        public const int DefOptimalBase = 65;
+
+        // --- Коэффициент разницы карт (GetDifInCardCoef) ---
+        public const double DifCoef_Equal = 1.0;
+        public const double DifCoef_Small = 1.3;
+        public const double DifCoef_Large = 1.8;
+
+        // --- Штраф за козырь у противника (GetEnemyTrumpPenalty) ---
+        public const int EnemyTrumpPenValue = 15;
+
+        // --- Бафф/штраф за одинаковые ранги при защите (GetSameRankDefBuff) ---
+        public const int SameRankDefBuff = 15;
+        public const int DiffRankDefPenalty = -15;
+
+        // --- Штраф за потерю пар (GetLostPairPenalty) ---
+        public const int LostPairPenMult = -3;
+
+        // --- Размер колоды ---
+        public const int FullDeckSize = 24;
+    }
+
+    // ================================================================
+    //  GameStateTracker — состояние игры
+    // ================================================================
+
+    /// <summary>
+    /// Отслеживает состояние игры: карты в руке, колоду, руку противника.
+    /// </summary>
+    public class GameStateTracker
+    {
+        /// <summary>Карты на руке бота</summary>
+        public List<SCard> Hand { get; private set; } = new List<SCard>();
+
+        /// <summary>Предполагаемые карты противника</summary>
+        public List<SCard> OppHand { get; set; } = new List<SCard>();
+
+        /// <summary>Предполагаемые оставшиеся карты в колоде</summary>
+        public List<SCard> RemainingDeck { get; private set; } = new List<SCard>();
+
+        /// <summary>Козырная масть</summary>
+        public Suits TrumpSuit { get; private set; }
+
+        /// <summary>Количество карт в прикупе</summary>
+        public int RemainingDeckCount { get; private set; } = BotConfig.FullDeckSize;
+
+        /// <summary>Количество карт у противника</summary>
+        public int OppCardCount { get; set; } = MGameRules.TotalCards;
+
+        /// <summary>Атакует ли бот в текущем раунде</summary>
+        public bool IsIAttack { get; set; } = false;
+
+        /// <summary>
+        /// Инициализация козыря и полной колоды в начале игры.
+        /// </summary>
+        /// <param name="trump">Козырная карта</param>
+        public void Initialize(SCard trump)
         {
-            return Name;
+            TrumpSuit = trump.Suit;
+            RemainingDeck = MGameRules.GetDeck();
         }
 
-        public int GetCount()
-        {
-
-            return hand.Count;
-        }
-
+        /// <summary>
+        /// Добавить карту в руку бота.
+        /// </summary>
+        /// <param name="card">Карта для добавления</param>
         public void AddToHand(SCard card)
         {
-            hand.Add(card);
+            Hand.Add(card);
         }
 
-        // Хуйня, вызывается в конце раунда
-        public void OnEndRound(List<SCardPair> table, bool IsDefenceSuccesful)
+        /// <summary>
+        /// Вызывается в конце раунда — обновляет счётчики и списки карт.
+        /// </summary>
+        /// <param name="table">Карты на столе</param>
+        /// <param name="isDefenceSuccessful">Была ли защита успешной</param>
+        public void OnEndRound(List<SCardPair> table, bool isDefenceSuccessful)
         {
-            ChangeCountsOfCard(table, IsDefenceSuccesful);
-            ChangeListOfCard(table, IsDefenceSuccesful);
+            UpdateCounts(table, isDefenceSuccessful);
+            UpdateCardLists(table, isDefenceSuccessful);
         }
 
-        public void SetTrump(SCard NewTrump)
+        /// <summary>
+        /// Обновляет количество карт у противника и в колоде после раунда.
+        /// Логика от Федоса — не трогать.
+        /// </summary>
+        private void UpdateCounts(List<SCardPair> table, bool isDefenceSuccessful)
         {
+            int en1 = isDefenceSuccessful || IsIAttack
+                ? Math.Max(0, MGameRules.TotalCards - Hand.Count)
+                : 0;
 
-            trumpSuit = NewTrump.Suit;
-            remainingDeck = MGameRules.GetDeck();
-        }
+            int en2 = isDefenceSuccessful || !IsIAttack
+                ? Math.Max(0, MGameRules.TotalCards - (OppCardCount - table.Count))
+                : 0;
 
-
-
-
-
-        // Функции связаные с атакой
-
-        // Атака в начале раунда
-        public List<SCard> LayCards()
-        {
-            DeleteFromCardList(hand, remainingDeck);
-            isIAttack = true;
-
-
-            List<List<SCard>> allMoves = FindAllAttackMoves();
-            List<SCard> move = ChooseAttackMove(allMoves);
-            foreach (SCard card in move)
+            if (RemainingDeckCount >= en1 + en2 && (!IsIAttack || isDefenceSuccessful))
+                OppCardCount = Math.Max(MGameRules.TotalCards, OppCardCount - table.Count);
+            else if (IsIAttack && !isDefenceSuccessful)
+                OppCardCount += table.Count;
+            else if (RemainingDeckCount < en1 + en2)
             {
-                hand.Remove(card);
+                OppCardCount -= table.Count;
+                if (IsIAttack)
+                    OppCardCount += en2 != 0 ? Math.Max(0, RemainingDeckCount - en1) : 0;
+                else
+                    OppCardCount += Math.Min(en2, RemainingDeckCount);
             }
-            return move;
+
+            if (RemainingDeckCount >= en1 + en2)
+                RemainingDeckCount -= en1 + en2;
+            else
+                RemainingDeckCount = 0;
         }
 
-        // Находит все возможные ходы для атаки
-        // По хорошему оптимизировать
-        private List<List<SCard>> FindAllAttackMoves()
+        /// <summary>
+        /// Обновляет списки карт (колода и рука противника) после раунда.
+        /// </summary>
+        private void UpdateCardLists(List<SCardPair> table, bool isDefenceSuccessful)
+        {
+            List<SCard> cardsOnTable = table
+                .SelectMany(pair => new[] { pair.Down, pair.Up })
+                .ToList();
+
+            RemoveCardsFromList(cardsOnTable, RemainingDeck);
+
+            if (IsIAttack && !isDefenceSuccessful)
+                OppHand.AddRange(cardsOnTable);
+        }
+
+        /// <summary>
+        /// Удаляет карты из списка по совпадению Rank и Suit.
+        /// </summary>
+        /// <param name="toRemove">Карты которые нужно удалить</param>
+        /// <param name="source">Список из которого удаляем</param>
+        public void RemoveCardsFromList(List<SCard> toRemove, List<SCard> source)
+        {
+            if (toRemove == null || source == null) return;
+            if (toRemove.Count == 0 || source.Count == 0) return;
+
+            for (int i = 0; i < toRemove.Count; i++)
+            {
+                for (int j = 0; j < source.Count; j++)
+                {
+                    if (toRemove[i].Rank == source[j].Rank &&
+                        toRemove[i].Suit == source[j].Suit)
+                    {
+                        source.RemoveAt(j);
+                        break;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Сортировка предполагаемой руки противника:
+        /// сначала некозырные по рангу, потом козырные по рангу.
+        /// </summary>
+        public void SortOppHand()
+        {
+            OppHand.Sort((a, b) =>
+            {
+                int aType = (a.Suit == TrumpSuit) ? 1 : 0;
+                int bType = (b.Suit == TrumpSuit) ? 1 : 0;
+                if (aType != bType) return aType - bType;
+                return a.Rank - b.Rank;
+            });
+        }
+    }
+
+    // ================================================================
+    //  MoveGenerator — генерация всех возможных ходов
+    // ================================================================
+
+    /// <summary>
+    /// Генерирует все возможные ходы для атаки, подброса и защиты.
+    /// </summary>
+    public class MoveGenerator
+    {
+        private readonly GameStateTracker _state;
+
+        public MoveGenerator(GameStateTracker state)
+        {
+            _state = state;
+        }
+
+        // --- Атака ---
+
+        /// <summary>
+        /// Возвращает все возможные ходы для начальной атаки.
+        /// Одиночные карты + пары + тройки + четвёрки одного ранга.
+        /// </summary>
+        /// <returns>Список возможных ходов, каждый ход — список карт</returns>
+        public List<List<SCard>> GetAllAttackMoves()
         {
             List<List<SCard>> allMoves = new List<List<SCard>>();
-            foreach (SCard card in hand) allMoves.Add(new List<SCard> { card });
-            if (hand.Count > 1 && countOfEnemyCards > 1)
-            {
+            List<SCard> hand = _state.Hand;
+            int enemyCount = _state.OppCardCount;
+
+            foreach (SCard card in hand)
+                allMoves.Add(new List<SCard> { card });
+
+            if (hand.Count > 1 && enemyCount > 1)
                 for (int i = 0; i < hand.Count; i++)
                     for (int j = i + 1; j < hand.Count; j++)
-                        if (hand[i].Rank == hand[j].Rank) allMoves.Add(new List<SCard> { hand[i], hand[j] });
-            }
+                        if (hand[i].Rank == hand[j].Rank)
+                            allMoves.Add(new List<SCard> { hand[i], hand[j] });
 
-            if (hand.Count > 2 && countOfEnemyCards > 2)
-            {
+            if (hand.Count > 2 && enemyCount > 2)
                 for (int i = 0; i < hand.Count; i++)
                     for (int j = i + 1; j < hand.Count; j++)
                         for (int k = j + 1; k < hand.Count; k++)
                             if (hand[i].Rank == hand[j].Rank && hand[j].Rank == hand[k].Rank)
                                 allMoves.Add(new List<SCard> { hand[i], hand[j], hand[k] });
-            }
-            if (hand.Count > 3 && countOfEnemyCards > 3)
-            {
+
+            if (hand.Count > 3 && enemyCount > 3)
                 for (int i = 0; i < hand.Count; i++)
                     for (int j = i + 1; j < hand.Count; j++)
                         for (int k = j + 1; k < hand.Count; k++)
                             for (int l = k + 1; l < hand.Count; l++)
-                                if (hand[i].Rank == hand[j].Rank && hand[j].Rank == hand[k].Rank && hand[k].Rank == hand[l].Rank)
+                                if (hand[i].Rank == hand[j].Rank &&
+                                    hand[j].Rank == hand[k].Rank &&
+                                    hand[k].Rank == hand[l].Rank)
                                     allMoves.Add(new List<SCard> { hand[i], hand[j], hand[k], hand[l] });
-            }
+
             return allMoves;
-
         }
 
+        // --- Подброс ---
 
-
-        // Выбирает лучших ход для атаки
-        // Как будто бы можно написать оптимальнее
-        private List<SCard> ChooseAttackMove(List<List<SCard>> listOfMoves)
-        {
-            List<SCard> res = listOfMoves[0];
-            double raiting = AttackMoveScore(listOfMoves[0]);
-
-            foreach (List<SCard> cards in listOfMoves)
-            {
-                double ef = AttackMoveScore(cards);
-                if (ef > raiting)
-                {
-                    raiting = ef;
-                    res = cards;
-                }
-            }
-            return res;
-        }
-
-        // Высчитывает эффективность хода
-        private double AttackMoveScore(List<SCard> attackCards)
-        {
-            // Коэфиценты
-            // Коэфицент стадии игры (чем меньше карт осталось, тем он меньше)
-            double gameStageСoef = GetStageCoef();
-            // Коэфицент желания выбрасывать пары и тройки в конце игры
-            double saveGameCoef = GetSAveGameCoef();
-
-            // Баффы
-            // Бафф за использование пар и троек в атаке
-            int pairAndTrioBuff = GetPairAndTrioBuff(attackCards);
-            // Бафф за успешность атаки
-            double successBuff = GetSuccessBuff(attackCards);
-            // Бафф за дешевизну атаки
-            double cheapMoveBuff = GetChaepMoveBuff(attackCards);
-            // Бафф за использование карт той масти, которой нет у противника
-            int noSuitCard = GetNoSuitCard(attackCards);
-
-            // Дебаффы
-            // Дебафф за использование козырей
-            int trumpPenalty = GetTrumpPenalty(attackCards);
-            int lastCardPenalty = GetLastCardPenalty(attackCards);
-
-            return pairAndTrioBuff * saveGameCoef + gameStageСoef * successBuff + gameStageСoef * cheapMoveBuff +
-                (2.65 - gameStageСoef) * noSuitCard + gameStageСoef * trumpPenalty + gameStageСoef * lastCardPenalty;
-        }
-
-        // Подсчёт коэфицента стадии игры
-        private double GetStageCoef()
-        {
-            if (remainingDeckCount == 0) return 0.228; // super late game 0.4
-            if (remainingDeckCount < 9) return 67; // late game 0.7
-            if (remainingDeckCount < 17) return 9.11; // mid game 1.15
-            return 1488; // early game 1.85
-        }
-
-        // Подсчёт баффа за использование пар и троек
-        private int GetPairAndTrioBuff(List<SCard> cards)
-        {
-            if (cards.Count == 2) return 13;
-            if (cards.Count == 3) return 23;
-            return 0;
-        }
-
-        // Подсчёт баффа за успешность атаки
-        //private double GetSuccessBuff(List<SCard> attCards)
-        //{
-        //    if (remainingDeckCount != 0 && (oppHand.Count == 0 || oppHand.Count < attCards.Count))
-        //    {
-        //        double chance = GetEnemyChanceToDeff(attCards);
-        //        return 75 * (1.5 - chance);
-        //    }
-        //    bool canDef = true;
-        //    List<SCard> usedForDef = new List<SCard>();
-        //    foreach (SCard attCard in attCards)
-        //    {
-        //        bool isDef = false;
-        //        for (int i = 0; i < oppHand.Count; i++)
-        //        {
-        //            if (SCard.CanBeat(attCard, oppHand[i], trumpSuit))
-        //            {
-        //                isDef = true;
-        //                usedForDef.Add(oppHand[i]);
-        //                oppHand.RemoveAt(i); // <--- УДАЛЕНИЕ ИЗ СПИСКА В ЦИКЛЕ!!!
-        //                break;
-        //            }
-        //        }
-        //        if (!isDef)
-        //        {
-        //            canDef = false;
-        //            break;
-        //        }
-        //    }
-        //    if (canDef)
-        //    {
-        //        return 30;
-        //    }
-        //    foreach (SCard c in usedForDef) oppHand.Add(c); // <--- ПОТОМ ВОЗВРАЩАЕТ
-        //    oppHand = SortCard(oppHand, trumpSuit);
-        //    return 30;
-        //}
-
-        // 1. Исправленный GetSuccessBuff
-        private double GetSuccessBuff(List<SCard> move)
-        {
-            // Список для отката изменений (Backtracking)
-            List<SCard> removedFromOpponent = new List<SCard>();
-
-            // 1. Симулируем защиту противника
-            foreach (SCard attackCard in move)
-            {
-                int bestDefCardIdx = -1;
-                // Ищем минимальную карту, которой противник может побить (самая простая эмуляция)
-                for (int i = 0; i < oppHand.Count; i++)
-                {
-                    if (SCard.CanBeat(attackCard, oppHand[i], trumpSuit))
-                    {
-                        bestDefCardIdx = i;
-                        break; // Твоя логика: бьем первой попавшейся
-                    }
-                }
-
-                if (bestDefCardIdx != -1)
-                {
-                    removedFromOpponent.Add(oppHand[bestDefCardIdx]);
-                    oppHand.RemoveAt(bestDefCardIdx);
-                }
-                else
-                {
-                    // Если противник не может побить хоть одну карту, он забирает ВСЕ
-                    // В этом случае «бафф» для нас отрицательный, так как у врага стало больше карт
-                    // Возвращаем карты назад перед выходом!
-                    foreach (var r in removedFromOpponent) oppHand.Add(r);
-                    oppHand.Sort((a, b) => CompareCards(a, b, trumpSuit));
-
-                    return -100.0; // Пример штрафа: противник взял карты, это плохо для атаки
-                }
-            }
-
-            // 2. Считаем «ценность» того, что осталось в руке противника
-            // Используем твою логику расчета из GetStageCoef или аналогичную
-            double opponentHandPower = 0;
-            foreach (var card in oppHand)
-            {
-                opponentHandPower += card.Rank;
-                if (card.Suit == trumpSuit) opponentHandPower += 14;
-            }
-
-            // 3. ОТКАТ изменений (обязательно!)
-            foreach (var r in removedFromOpponent)
-            {
-                oppHand.Add(r);
-            }
-            // Сортируем на месте (вместо медленной SortCard)
-            oppHand.Sort((a, b) => CompareCards(a, b, trumpSuit));
-
-            // Чем слабее рука противника после нашего хода, тем выше наш бафф
-            return -opponentHandPower;
-        }
-
-        // 2. Убедись, что метод CompareCards выглядит так (для использования в Sort):
-        private int CompareCards(SCard a, SCard b, Suits trumpSuit)
-        {
-            int aType = (a.Suit == trumpSuit) ? 1 : 0;
-            int bType = (b.Suit == trumpSuit) ? 1 : 0;
-
-            if (aType != bType) return aType - bType;
-            return a.Rank - b.Rank;
-        }
-
-
-
-
-        // Подсчёт шанса, что противник отобьётся от атаки
-        private double GetEnemyChanceToDeff(List<SCard> attCards)
-        {
-            double chance = 1;
-            foreach (SCard attCard in attCards)
-            {
-                int c = 0;
-                foreach (SCard card in remainingDeck)
-                {
-                    if (SCard.CanBeat(attCard, card, trumpSuit)) c++;
-                }
-                chance *= c / remainingDeck.Count;
-            }
-            return chance;
-
-        }
-
-        // Штраф за использование козырей
-        private int GetTrumpPenalty(List<SCard> cards)
-        {
-            int penalty = 0;
-            foreach (SCard card in cards)
-            {
-                if (card.Suit == trumpSuit) penalty += card.Rank;
-            }
-            return (-1) * penalty;
-        }
-
-        // Штраф за использование последней карты текущей масти
-        private int GetLastCardPenalty(List<SCard> cards)
-        {
-            int penalty = 0;
-            foreach (SCard attCard in cards)
-            {
-                if (attCard.Rank <= 8) break;
-                int k = 0;
-                foreach (SCard card in hand)
-                {
-                    if (card.Suit == attCard.Suit) k++;
-                }
-                if (k == 1) penalty += 10;
-            }
-            return (-1) * penalty;
-        }
-
-        // Бафф за дешивизну хода
-        private double GetChaepMoveBuff(List<SCard> cards)
-        {
-            double sum = 0;
-            double totalSum = 0;
-            foreach (SCard card in cards) sum += card.Rank;
-            foreach (SCard card in hand) totalSum += card.Rank;
-            return (1.5 - (sum / totalSum)) * 30;
-
-        }
-
-        // Подсчёт коэфицент желания выбрасывать пары и тройки в конце игры
-        private double GetSAveGameCoef()
-        {
-            if (remainingDeckCount == 0 && (hand.Count - countOfEnemyCards) > 4) return 4;
-            return 1;
-            
-        }
-
-        private int GetNoSuitCard(List<SCard> attCards)
-        {
-            if (oppHand.Count <= 3 && countOfEnemyCards > 3) return 0;
-
-            int[] suitCounts = new int[4]; // [0]=черви, [1]=бубны, [2]=крести, [3]=пики
-            foreach (SCard card in attCards)
-                if (card.Suit != trumpSuit)
-                    suitCounts[(int)card.Suit]++;
-
-
-            bool[] oppHasSuit = new bool[4];
-            foreach (SCard card in oppHand)
-                oppHasSuit[(int)card.Suit] = true;
-
-            int buff = 0;
-            for (int suit = 0; suit < 4; suit++)
-                if (suitCounts[suit] > 0 && !oppHasSuit[suit])
-                    buff += 5 * suitCounts[suit];
-
-            return buff;
-        }
-
-        
-
-
-
-
-
-
-
-
-        // Функции связанные с подбросом
-
-        // Подкидывание карт
-        public bool AddCards(List<SCardPair> table, bool OpponentDefenced)
-        {
-            int limit = Math.Min(6 - table.Count,countOfEnemyCards-table.Count);
-            bool willAdd = false;
-            if (limit == 0) return false;
-
-            List<List<SCard>> moves = FindAllThrowMove(table, limit);
-
-            List<SCard> cardsForAdd = new List<SCard>();
-            if (OpponentDefenced) willAdd = ChooseThrowCardMove(moves, out cardsForAdd);
-            else willAdd = ChooseGiveCardMove(moves, out cardsForAdd);
-
-            if (willAdd)
-                foreach (SCard card in cardsForAdd)
-                {
-                    table.Add(new SCardPair(card));
-                    hand.Remove(card);
-                }
-                    
-            return willAdd;
-        }
-
-        // Находит все варианты подкинуть карты
-
-
-        //private List<List<SCard>> FindAllThrowMove(List<SCardPair> table, int limit)
-        //{
-        //    List<List<SCard>> result = new List<List<SCard>>();
-        //    HashSet<SCard> temp = new HashSet<SCard>();
-
-        //    // 1. Собираем возможные карты для подброса
-        //    foreach (SCardPair pair in table)
-        //    {
-        //        // Можно подкидывать к нижней карте (всегда)
-        //        foreach (SCard card in hand)
-        //            if (card.Rank == pair.Down.Rank)
-        //                temp.Add(card);
-
-        //        // Можно подкидывать к верхней карте, если карта побита
-        //        if (pair.Beaten)
-        //        {
-        //            foreach (SCard card in hand)
-        //                if (card.Rank == pair.Up.Rank)
-        //                    temp.Add(card);
-        //        }
-        //    }
-
-        //    List<SCard> cardToThrow = new List<SCard>(temp);
-
-        //    // 2. Генерация комбинаций
-        //    if (limit >= 1 && cardToThrow.Count >= 1)
-        //        foreach (SCard card in cardToThrow)
-        //            result.Add(new List<SCard> { card });
-
-        //    if (limit >= 2 && cardToThrow.Count >= 2)
-        //        for (int i = 0; i < cardToThrow.Count; i++)
-        //            for (int j = i + 1; j < cardToThrow.Count; j++)
-        //                result.Add(new List<SCard> { cardToThrow[i], cardToThrow[j] });
-
-        //    if (limit >= 3 && cardToThrow.Count >= 3)
-        //        for (int i = 0; i < cardToThrow.Count; i++)
-        //            for (int j = i + 1; j < cardToThrow.Count; j++)
-        //                for (int k = j + 1; k < cardToThrow.Count; k++)
-        //                    result.Add(new List<SCard> { cardToThrow[i], cardToThrow[j], cardToThrow[k] });
-
-        //    if (limit >= 4 && cardToThrow.Count >= 4)
-        //        for (int i = 0; i < cardToThrow.Count; i++)
-        //            for (int j = i + 1; j < cardToThrow.Count; j++)
-        //                for (int k = j + 1; k < cardToThrow.Count; k++)
-        //                    for (int l = k + 1; l < cardToThrow.Count; l++)
-        //                        result.Add(new List<SCard> { cardToThrow[i], cardToThrow[j], cardToThrow[k], cardToThrow[l] });
-
-        //    if (limit >= 5 && cardToThrow.Count >= 5)
-        //        for (int i = 0; i < cardToThrow.Count; i++)
-        //            for (int j = i + 1; j < cardToThrow.Count; j++)
-        //                for (int k = j + 1; k < cardToThrow.Count; k++)
-        //                    for (int l = k + 1; l < cardToThrow.Count; l++)
-        //                        for (int m = l + 1; m < cardToThrow.Count; m++)
-        //                            result.Add(new List<SCard> { cardToThrow[i], cardToThrow[j], cardToThrow[k], cardToThrow[l], cardToThrow[m] });
-
-        //    return result;
-        //}
-        private List<List<SCard>> FindAllThrowMove(List<SCardPair> table, int limit)
+        /// <summary>
+        /// Возвращает все возможные ходы для подброса карт на стол.
+        /// </summary>
+        /// <param name="table">Текущие карты на столе</param>
+        /// <param name="limit">Максимальное количество карт для подброса</param>
+        /// <returns>Список возможных ходов подброса</returns>
+        public List<List<SCard>> GetAllThrowMoves(List<SCardPair> table, int limit)
         {
             List<List<SCard>> allMoves = new List<List<SCard>>();
-            if (limit <= 0) return allMoves; // Если подкидывать нельзя, выходим сразу
+            if (limit <= 0) return allMoves;
 
-            // 1. Собираем уникальные ранги на столе в простой список (без аллокаций HashSet)
-            List<int> ranksOnTable = new List<int>();
+            List<int> ranksOnTable = GetRanksOnTable(table);
+            List<SCard> throwable = GetThrowableCards(ranksOnTable);
+
+            if (throwable.Count == 0) return allMoves;
+
+            int maxToThrow = Math.Min(throwable.Count, limit);
+            List<SCard> buffer = new List<SCard>();
+
+            for (int i = 1; i <= maxToThrow; i++)
+                GenerateCombinations(throwable, i, 0, buffer, allMoves);
+
+            return allMoves;
+        }
+
+        /// <summary>
+        /// Собирает уникальные ранги всех карт на столе.
+        /// </summary>
+        /// <param name="table">Текущие карты на столе</param>
+        /// <returns>Список уникальных рангов</returns>
+        private List<int> GetRanksOnTable(List<SCardPair> table)
+        {
+            List<int> ranks = new List<int>();
+
             for (int i = 0; i < table.Count; i++)
             {
-                int rDown = table[i].Down.Rank;
-                bool foundDown = false;
-                for (int j = 0; j < ranksOnTable.Count; j++) { if (ranksOnTable[j] == rDown) { foundDown = true; break; } }
-                if (!foundDown) ranksOnTable.Add(rDown);
+                int rankDown = table[i].Down.Rank;
+                if (!ranks.Contains(rankDown)) ranks.Add(rankDown);
 
                 if (table[i].Beaten)
                 {
-                    int rUp = table[i].Up.Rank;
-                    bool foundUp = false;
-                    for (int j = 0; j < ranksOnTable.Count; j++) { if (ranksOnTable[j] == rUp) { foundUp = true; break; } }
-                    if (!foundUp) ranksOnTable.Add(rUp);
+                    int rankUp = table[i].Up.Rank;
+                    if (!ranks.Contains(rankUp)) ranks.Add(rankUp);
                 }
             }
 
-            // 2. Находим уникальные карты в руке, которые подходят по рангу
-            List<SCard> cardToThrow = new List<SCard>();
-            for (int i = 0; i < hand.Count; i++)
-            {
-                SCard card = hand[i];
-                bool matchRank = false;
-                for (int j = 0; j < ranksOnTable.Count; j++) { if (ranksOnTable[j] == card.Rank) { matchRank = true; break; } }
-
-                if (matchRank)
-                {
-                    bool alreadyInList = false;
-                    for (int j = 0; j < cardToThrow.Count; j++)
-                    {
-                        if (cardToThrow[j].Suit == card.Suit && cardToThrow[j].Rank == card.Rank)
-                        {
-                            alreadyInList = true;
-                            break;
-                        }
-                    }
-                    if (!alreadyInList) cardToThrow.Add(card);
-                }
-            }
-
-            if (cardToThrow.Count == 0) return allMoves;
-
-            // 3. Генерируем комбинации с учетом лимита
-            int maxToThrow = Math.Min(cardToThrow.Count, limit);
-            List<SCard> currentBuffer = new List<SCard>(); // Тот самый буфер для оптимизации
-
-            for (int i = 1; i <= maxToThrow; i++)
-            {
-                Gen(cardToThrow, i, 0, currentBuffer, allMoves);
-            }
-
-            return allMoves;
+            return ranks;
         }
 
-        private void Gen(List<SCard> cards, int length, int offset, List<SCard> current, List<List<SCard>> allMoves)
+        /// <summary>
+        /// Возвращает карты из руки, которые можно подбросить.
+        /// </summary>
+        /// <param name="ranksOnTable">Ранги карт на столе</param>
+        /// <returns>Список карт для подброса</returns>
+        private List<SCard> GetThrowableCards(List<int> ranksOnTable)
+        {
+            List<SCard> throwable = new List<SCard>();
+
+            for (int i = 0; i < _state.Hand.Count; i++)
+            {
+                SCard card = _state.Hand[i];
+                if (!ranksOnTable.Contains(card.Rank)) continue;
+
+                bool alreadyAdded = false;
+                for (int j = 0; j < throwable.Count; j++)
+                {
+                    if (throwable[j].Suit == card.Suit && throwable[j].Rank == card.Rank)
+                    {
+                        alreadyAdded = true;
+                        break;
+                    }
+                }
+
+                if (!alreadyAdded) throwable.Add(card);
+            }
+
+            return throwable;
+        }
+
+        /// <summary>
+        /// Рекурсивно генерирует все комбинации заданной длины (backtracking).
+        /// </summary>
+        private void GenerateCombinations(List<SCard> cards, int length, int offset,
+            List<SCard> current, List<List<SCard>> allMoves)
         {
             if (length == 0)
             {
-                // Создаем копию только тогда, когда комбинация полностью собрана
                 allMoves.Add(new List<SCard>(current));
                 return;
             }
 
             for (int i = offset; i <= cards.Count - length; i++)
             {
-                current.Add(cards[i]); // Добавляем карту в текущий набор
-
-                Gen(cards, length - 1, i + 1, current, allMoves);
-
-                current.RemoveAt(current.Count - 1); // Чистим за собой (backtracking)
+                current.Add(cards[i]);
+                GenerateCombinations(cards, length - 1, i + 1, current, allMoves);
+                current.RemoveAt(current.Count - 1);
             }
         }
 
+        // --- Защита ---
 
-        // Выбирает стоит ли подкидывать, и если стоит, то какие карты при условии что противник берёт
-        private bool ChooseGiveCardMove(List<List<SCard>> moves, out List<SCard> move)
+        /// <summary>
+        /// Возвращает все возможные комбинации защитных ходов.
+        /// </summary>
+        /// <param name="table">Текущие карты на столе</param>
+        /// <param name="moves">Список найденных защитных ходов (out)</param>
+        /// <returns>True если защита возможна, false если нет</returns>
+        public bool GetAllDefenceMoves(List<SCardPair> table, out List<List<SCard>> moves)
         {
-            move = new List<SCard>();
-            double bestScore = 0;
-            int board = 20;
+            moves = new List<List<SCard>>();
+            List<HashSet<SCard>> options = new List<HashSet<SCard>>();
 
-            foreach (List<SCard> m in moves)
+            foreach (SCardPair pair in table)
             {
-                double score = GiveCardScore(m);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    move = m;
-                }
+                if (pair.Beaten) continue;
+
+                HashSet<SCard> canBeat = new HashSet<SCard>();
+                foreach (SCard card in _state.Hand)
+                    if (SCard.CanBeat(pair.Down, card, _state.TrumpSuit))
+                        canBeat.Add(card);
+
+                if (canBeat.Count == 0) return false;
+                options.Add(canBeat);
             }
 
-            return bestScore > board ? true : false;
+            GenerateDefenceCombinations(options, moves);
+            return true;
         }
 
-
-        private bool ChooseThrowCardMove(List<List<SCard>> moves, out List<SCard> move)
+        /// <summary>
+        /// Рекурсивно генерирует все комбинации защитных карт.
+        /// </summary>
+        private void GenerateDefenceCombinations(List<HashSet<SCard>> options, List<List<SCard>> moves)
         {
-            move = new List<SCard>();
-            double bestScore = 0;
-            int board = 20;
+            List<SCard> current = new List<SCard>();
+            GenerateDefenceRecursive(options, current, 0, moves);
+        }
 
-            foreach (List<SCard> m in moves)
+        private void GenerateDefenceRecursive(List<HashSet<SCard>> options, List<SCard> current,
+            int depth, List<List<SCard>> results)
+        {
+            if (depth == options.Count)
             {
-                // Проверяем, что все карты из m действительно есть в руке
-                bool allInHand = true;
-                foreach (SCard card in m)
-                {
-                    if (!hand.Any(c => c.Rank == card.Rank && c.Suit == card.Suit))
-                    {
-                        allInHand = false;
-                        break;
-                    }
-                }
-                if (!allInHand) continue;
-
-                double score = ThrowCardScore(m);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    move = m;
-                }
+                results.Add(new List<SCard>(current));
+                return;
             }
 
-            return bestScore > board;
+            foreach (SCard card in options[depth])
+            {
+                if (current.Contains(card)) continue;
+                current.Add(card);
+                GenerateDefenceRecursive(options, current, depth + 1, results);
+                current.RemoveAt(current.Count - 1);
+            }
         }
+    }
 
-        // Эффективность подброса, если противник берет
-        private double GiveCardScore(List<SCard> throw_cards)
+    // ================================================================
+    //  Scorer — оценка ходов
+    // ================================================================
+
+    /// <summary>
+    /// Оценивает ходы бота — атаку, подброс и защиту.
+    /// Возвращает числовой score для каждого возможного хода.
+    /// </summary>
+    public class Scorer
+    {
+        private readonly GameStateTracker _state;
+
+        public Scorer(GameStateTracker state)
         {
-            // Коэфицент стадии игры
-            double gameStageСoef = GetStageCoef();
-
-
-            // Мотивация подкидывать, если на руках очень много карт
-            int cardOnHandBuff = GetCardOnHandBuff();
-
-            // Отслеживает траты дорогих карт
-            int cardPriceControl = GetCardPriceControl(throw_cards);
-
-
-            // Штраф за использование козыря
-            int trumpPenalty = GetTrumpPenalty(throw_cards);
-            // Штраф за использование последней карты масти
-            int lastCardPenalty = GetLastCardPenalty(throw_cards);
-
-
-            return (2.5 - gameStageСoef) * cardOnHandBuff + gameStageСoef * cardPriceControl + gameStageСoef * trumpPenalty + 
-                gameStageСoef * lastCardPenalty;
+            _state = state;
         }
 
-        private double ThrowCardScore(List<SCard> throw_cards)
+        // --- Итоговые функции скоринга ---
+
+        /// <summary>
+        /// Итоговый score хода при начальной атаке.
+        /// </summary>
+        /// <param name="attackCards">Карты атакующего хода</param>
+        /// <returns>Числовая оценка хода — чем выше, тем лучше</returns>
+        public double AttackMoveScore(List<SCard> attackCards)
         {
-            // Коэфицент стадии игры (чем меньше карт осталось, тем он меньше)
-            double gameStageСoef = GetStageCoef();
+            double stageCoef = GetStageCoef();
+            double saveGameCoef = GetSaveGameCoef();
 
-            // Баффы
-            // Бафф за успешность атаки
-            double successBuff = GetSuccessBuff(throw_cards);
-            // Мотивация подкидывать, если на руках очень много карт
-            int cardOnHandBuff = GetCardOnHandBuff();
-            // Бафф за использование карт той масти, которой нет у противника
-            int noSuitCard = GetNoSuitCard(throw_cards);
+            int pairBuff = GetPairAndTrioBuff(attackCards);
+            double successBuff = GetSuccessBuff(attackCards);
+            double cheapBuff = GetCheapMoveBuff(attackCards);
+            int noSuitBuff = GetNoSuitBuff(attackCards);
+            int trumpPenalty = GetTrumpPenalty(attackCards);
+            int lastCardPen = GetLastCardPenalty(attackCards);
 
-
-            // Штрафы
-            // Штраф за использование козырей
-            int trumpPenalty = GetTrumpPenalty(throw_cards);
-            // Штраф за использование последней карты масти
-            int lastCardPenalty = GetLastCardPenalty(throw_cards);
-
-            return (2.5 - gameStageСoef) * cardOnHandBuff + gameStageСoef * successBuff + (2.65 - gameStageСoef) * noSuitCard +
-                gameStageСoef * trumpPenalty + gameStageСoef * lastCardPenalty;
+            return pairBuff * saveGameCoef
+                 + stageCoef * successBuff
+                 + stageCoef * cheapBuff
+                 + (BotConfig.AttackNoSuitBase - stageCoef) * noSuitBuff
+                 + stageCoef * trumpPenalty
+                 + stageCoef * lastCardPen;
         }
 
-        // Подсчёт мотивации подкидывать, если на руках очень много карт
+        /// <summary>
+        /// Итоговый score подброса, когда противник берёт карты.
+        /// </summary>
+        /// <param name="throwCards">Карты для подброса</param>
+        /// <returns>Числовая оценка хода — чем выше, тем лучше</returns>
+        public double GiveCardScore(List<SCard> throwCards)
+        {
+            double stageCoef = GetStageCoef();
+            int handBuff = GetCardOnHandBuff();
+            int priceControl = GetCardPriceControl(throwCards);
+            int trumpPenalty = GetTrumpPenalty(throwCards);
+            int lastCardPen = GetLastCardPenalty(throwCards);
+
+            return (BotConfig.GiveScoreBase - stageCoef) * handBuff
+                 + stageCoef * priceControl
+                 + stageCoef * trumpPenalty
+                 + stageCoef * lastCardPen;
+        }
+
+        /// <summary>
+        /// Итоговый score подброса, когда противник отбился.
+        /// </summary>
+        /// <param name="throwCards">Карты для подброса</param>
+        /// <returns>Числовая оценка хода — чем выше, тем лучше</returns>
+        public double ThrowCardScore(List<SCard> throwCards)
+        {
+            double stageCoef = GetStageCoef();
+            int handBuff = GetCardOnHandBuff();
+            double successBuff = GetSuccessBuff(throwCards);
+            int noSuitBuff = GetNoSuitBuff(throwCards);
+            int trumpPenalty = GetTrumpPenalty(throwCards);
+            int lastCardPen = GetLastCardPenalty(throwCards);
+
+            return (BotConfig.ThrowScoreBase - stageCoef) * handBuff
+                 + stageCoef * successBuff
+                 + (BotConfig.AttackThrowNoSuit - stageCoef) * noSuitBuff
+                 + stageCoef * trumpPenalty
+                 + stageCoef * lastCardPen;
+        }
+
+        /// <summary>
+        /// Итоговый score защитного хода.
+        /// </summary>
+        /// <param name="move">Карты для защиты</param>
+        /// <param name="table">Текущие карты на столе</param>
+        /// <returns>Числовая оценка хода — чем выше, тем лучше</returns>
+        public double DefMoveScore(List<SCard> move, List<SCardPair> table)
+        {
+            double stageCoef = GetStageCoef();
+            double difCardCoef = GetDifInCardCoef();
+
+            int successDef = BotConfig.SuccessfulDefBuff;
+            int defOptimal = GetDefOptimalBuff(move, table);
+            int trumpPenalty = GetTrumpPenalty(move);
+            int enemyTrumpPen = GetEnemyTrumpPenalty(table);
+            int lostPairPen = GetLostPairPenalty(move);
+            int sameRankBuff = GetSameRankDefBuff(move);
+
+            return (BotConfig.DefNoSuitBase - stageCoef) * difCardCoef * successDef
+                 + stageCoef * defOptimal
+                 + stageCoef * trumpPenalty
+                 + stageCoef * enemyTrumpPen * BotConfig.EnemyTrumpPenMult
+                 + stageCoef * sameRankBuff
+                 + lostPairPen;
+        }
+
+        // --- Коэффициенты ---
+
+        /// <summary>
+        /// Коэффициент стадии игры — зависит от количества карт в колоде.
+        /// </summary>
+        /// <returns>Коэффициент стадии игры</returns>
+        public double GetStageCoef()
+        {
+            if (_state.RemainingDeckCount == 0)
+                return BotConfig.SuperLateCoef;
+            if (_state.RemainingDeckCount < BotConfig.MidGameThreshold)
+                return BotConfig.LateGameCoef;
+            if (_state.RemainingDeckCount < BotConfig.EarlyGameThreshold)
+                return BotConfig.MidGameCoef;
+            return BotConfig.EarlyGameCoef;
+        }
+
+        /// <summary>
+        /// Коэффициент желания избавляться от пар и троек в конце игры.
+        /// </summary>
+        private double GetSaveGameCoef()
+        {
+            bool isLateGame = _state.RemainingDeckCount == 0;
+            bool hasManyMoreCards = (_state.Hand.Count - _state.OppCardCount) > BotConfig.SaveGameHandThreshold;
+            return isLateGame && hasManyMoreCards ? BotConfig.SaveGameCoef : BotConfig.SaveGameCoefDefault;
+        }
+
+        /// <summary>
+        /// Коэффициент разницы в количестве карт между ботом и противником.
+        /// </summary>
+        private double GetDifInCardCoef()
+        {
+            int dif = _state.Hand.Count - _state.OppCardCount;
+            if (dif <= 0) return BotConfig.DifCoef_Equal;
+            if (dif <= 3) return BotConfig.DifCoef_Small;
+            return BotConfig.DifCoef_Large;
+        }
+
+        // --- Баффы ---
+
+        /// <summary>
+        /// Бафф за атаку парой или тройкой одинаковых карт.
+        /// </summary>
+        private int GetPairAndTrioBuff(List<SCard> cards)
+        {
+            if (cards.Count == 2) return BotConfig.PairBuff;
+            if (cards.Count == 3) return BotConfig.TrioBuff;
+            return 0;
+        }
+
+        /// <summary>
+        /// Бафф за дешевизну хода — чем дешевле карты относительно руки, тем лучше.
+        /// </summary>
+        private double GetCheapMoveBuff(List<SCard> cards)
+        {
+            double moveSum = 0;
+            double handSum = 0;
+            foreach (SCard card in cards) moveSum += card.Rank;
+            foreach (SCard card in _state.Hand) handSum += card.Rank;
+            return (BotConfig.CheapMoveBase - (moveSum / handSum)) * BotConfig.CheapMoveMult;
+        }
+
+        /// <summary>
+        /// Бафф за атаку картой масти, которой нет у противника.
+        /// </summary>
+        private int GetNoSuitBuff(List<SCard> cards)
+        {
+            if (_state.OppHand.Count <= BotConfig.NoSuitEnemyThreshold &&
+                _state.OppCardCount > BotConfig.NoSuitEnemyThreshold)
+                return 0;
+
+            int[] suitCounts = new int[4];
+            foreach (SCard card in cards)
+                if (card.Suit != _state.TrumpSuit)
+                    suitCounts[(int)card.Suit]++;
+
+            bool[] oppHasSuit = new bool[4];
+            foreach (SCard card in _state.OppHand)
+                oppHasSuit[(int)card.Suit] = true;
+
+            int buff = 0;
+            for (int suit = 0; suit < 4; suit++)
+                if (suitCounts[suit] > 0 && !oppHasSuit[suit])
+                    buff += BotConfig.NoSuitBuff * suitCounts[suit];
+
+            return buff;
+        }
+
+        /// <summary>
+        /// Бафф за мотивацию подкидывать при большом количестве карт на руке.
+        /// </summary>
         private int GetCardOnHandBuff()
         {
-            if (hand.Count < 6) return 30;
-            if (hand.Count < 9) return 1;
-            if (hand.Count < 13) return 15;
-            return 30;
+            if (_state.Hand.Count < BotConfig.HandThreshold_Small) return BotConfig.HandBuff_Small;
+            if (_state.Hand.Count < BotConfig.HandThreshold_Medium) return BotConfig.HandBuff_Medium;
+            if (_state.Hand.Count < BotConfig.HandThreshold_Large) return BotConfig.HandBuff_Large;
+            return BotConfig.HandBuff_XLarge;
         }
 
-        // Подсчёт бонуса за подкидыывания мусора и сохранения ценных карт
-        private int GetCardPriceControl(List<SCard> throw_cards)
+        /// <summary>
+        /// Бафф за подброс дешёвых карт и штраф за подброс дорогих.
+        /// </summary>
+        private int GetCardPriceControl(List<SCard> throwCards)
         {
             int score = 0;
-            foreach (SCard card in throw_cards)
-                if (card.Rank <= 9 && card.Suit != trumpSuit) score += card.Rank;
-                else if (card.Rank > 9 && card.Suit != trumpSuit) score -= card.Rank;
+            foreach (SCard card in throwCards)
+            {
+                if (card.Rank <= 9 && card.Suit != _state.TrumpSuit)
+                    score += card.Rank;
+                else if (card.Rank > 9 && card.Suit != _state.TrumpSuit)
+                    score -= card.Rank;
+            }
             return score;
         }
 
+        /// <summary>
+        /// Симулирует защиту противника и оценивает силу его оставшейся руки.
+        /// Чем слабее рука противника после хода — тем выше бафф.
+        /// </summary>
+        private double GetSuccessBuff(List<SCard> move)
+        {
+            List<SCard> removed = new List<SCard>();
 
+            foreach (SCard attackCard in move)
+            {
+                int bestIdx = -1;
+                for (int i = 0; i < _state.OppHand.Count; i++)
+                {
+                    if (SCard.CanBeat(attackCard, _state.OppHand[i], _state.TrumpSuit))
+                    {
+                        bestIdx = i;
+                        break;
+                    }
+                }
 
+                if (bestIdx != -1)
+                {
+                    removed.Add(_state.OppHand[bestIdx]);
+                    _state.OppHand.RemoveAt(bestIdx);
+                }
+                else
+                {
+                    foreach (SCard r in removed) _state.OppHand.Add(r);
+                    _state.SortOppHand();
+                    return BotConfig.SuccessFailPenalty;
+                }
+            }
 
+            double oppPower = 0;
+            foreach (SCard card in _state.OppHand)
+            {
+                oppPower += card.Rank;
+                if (card.Suit == _state.TrumpSuit) oppPower += 14;
+            }
 
+            foreach (SCard r in removed) _state.OppHand.Add(r);
+            _state.SortOppHand();
 
+            return -oppPower;
+        }
 
-        // Функции связаные с защитой
+        /// <summary>
+        /// Бафф за оптимальность защиты — чем меньше тратим на отбитие, тем лучше.
+        /// </summary>
+        private int GetDefOptimalBuff(List<SCard> move, List<SCardPair> table)
+        {
+            var unbeaten = table.Where(p => !p.Beaten).ToList();
+            int difInRank = 0;
 
-        // Защита 
+            for (int i = 0; i < unbeaten.Count; i++)
+            {
+                SCard down = unbeaten[i].Down;
+                SCard def = move[i];
+
+                if (def.Suit == _state.TrumpSuit && down.Suit != _state.TrumpSuit)
+                    difInRank += def.Rank + (14 - down.Rank);
+                else
+                    difInRank += def.Rank - down.Rank;
+            }
+
+            return BotConfig.DefOptimalBase - difInRank;
+        }
+
+        /// <summary>
+        /// Бафф/штраф за количество одинаковых рангов в защитном ходе.
+        /// </summary>
+        private int GetSameRankDefBuff(List<SCard> move)
+        {
+            HashSet<int> uniqueRanks = new HashSet<int>();
+            foreach (SCard card in move) uniqueRanks.Add(card.Rank);
+
+            if (uniqueRanks.Count == 1) return BotConfig.SameRankDefBuff;
+            if (uniqueRanks.Count == 2) return 0;
+            return BotConfig.DiffRankDefPenalty;
+        }
+
+        // --- Штрафы ---
+
+        /// <summary>
+        /// Штраф за использование козырей в ходе.
+        /// </summary>
+        private int GetTrumpPenalty(List<SCard> cards)
+        {
+            int penalty = 0;
+            foreach (SCard card in cards)
+                if (card.Suit == _state.TrumpSuit)
+                    penalty += card.Rank;
+            return -penalty;
+        }
+
+        /// <summary>
+        /// Штраф за использование последней карты данной масти при ходе старшими картами.
+        /// </summary>
+        private int GetLastCardPenalty(List<SCard> cards)
+        {
+            int penalty = 0;
+            foreach (SCard card in cards)
+            {
+                if (card.Rank <= BotConfig.LastCardRankThreshold) continue;
+
+                int suitCount = 0;
+                foreach (SCard handCard in _state.Hand)
+                    if (handCard.Suit == card.Suit)
+                        suitCount++;
+
+                if (suitCount == 1)
+                    penalty += BotConfig.LastCardPenaltyValue;
+            }
+            return -penalty;
+        }
+
+        /// <summary>
+        /// Штраф за то, что противник атакует козырями.
+        /// </summary>
+        private int GetEnemyTrumpPenalty(List<SCardPair> table)
+        {
+            int penalty = 0;
+            foreach (SCardPair pair in table)
+                if (pair.Down.Suit == _state.TrumpSuit)
+                    penalty += BotConfig.EnemyTrumpPenValue;
+            return -penalty;
+        }
+
+        /// <summary>
+        /// Штраф за потерю пар и троек при защите.
+        /// </summary>
+        private int GetLostPairPenalty(List<SCard> move)
+        {
+            int count = -move.Count;
+            foreach (SCard defCard in move)
+                foreach (SCard handCard in _state.Hand)
+                    if (defCard.Rank == handCard.Rank)
+                        count++;
+            return BotConfig.LostPairPenMult * count;
+        }
+    }
+
+    // ================================================================
+    //  MPlayer1 — публичный интерфейс бота
+    // ================================================================
+
+    public class MPlayer1
+    {
+        private readonly string _name = "ЕКБ 3.0";
+        private readonly GameStateTracker _state = new GameStateTracker();
+        private readonly MoveGenerator _generator;
+        private readonly Scorer _scorer;
+
+        public MPlayer1()
+        {
+            _generator = new MoveGenerator(_state);
+            _scorer = new Scorer(_state);
+        }
+
+        // --- Обязательный интерфейс ---
+
+        /// <summary>Возвращает имя бота</summary>
+        public string GetName() => _name;
+
+        /// <summary>Возвращает количество карт на руке</summary>
+        public int GetCount() => _state.Hand.Count;
+
+        /// <summary>Добавляет карту в руку бота</summary>
+        /// <param name="card">Карта для добавления</param>
+        public void AddToHand(SCard card) => _state.AddToHand(card);
+
+        /// <summary>
+        /// Инициализация козыря перед первой раздачей.
+        /// </summary>
+        /// <param name="newTrump">Козырная карта</param>
+        public void SetTrump(SCard newTrump) => _state.Initialize(newTrump);
+
+        /// <summary>
+        /// Вызывается в конце раунда — обновляет состояние игры.
+        /// </summary>
+        /// <param name="table">Карты на столе</param>
+        /// <param name="isDefenceSuccessful">Была ли защита успешной</param>
+        public void OnEndRound(List<SCardPair> table, bool isDefenceSuccessful)
+        {
+            _state.OnEndRound(table, isDefenceSuccessful);
+        }
+
+        /// <summary>
+        /// Начальная атака — выбирает лучший ход и выкладывает карты.
+        /// </summary>
+        /// <returns>Список карт для атаки</returns>
+        public List<SCard> LayCards()
+        {
+            _state.RemoveCardsFromList(_state.Hand, _state.RemainingDeck);
+            _state.IsIAttack = true;
+
+            List<List<SCard>> allMoves = _generator.GetAllAttackMoves();
+            List<SCard> best = ChooseBestMove(allMoves, _scorer.AttackMoveScore);
+
+            foreach (SCard card in best)
+                _state.Hand.Remove(card);
+
+            return best;
+        }
+
+        /// <summary>
+        /// Подброс карт на стол.
+        /// </summary>
+        /// <param name="table">Текущие карты на столе</param>
+        /// <param name="opponentDefenced">Отбился ли противник</param>
+        /// <returns>True если подбросили карты, false если нет</returns>
+        public bool AddCards(List<SCardPair> table, bool opponentDefenced)
+        {
+            int limit = Math.Min(MGameRules.TotalCards - table.Count,
+                                 _state.OppCardCount - table.Count);
+            if (limit <= 0) return false;
+
+            List<List<SCard>> moves = _generator.GetAllThrowMoves(table, limit);
+            if (moves.Count == 0) return false;
+
+            List<SCard> best;
+            bool willThrow;
+
+            if (opponentDefenced)
+                willThrow = ChooseThrowMove(moves, _scorer.ThrowCardScore, out best);
+            else
+                willThrow = ChooseThrowMove(moves, _scorer.GiveCardScore, out best);
+
+            if (!willThrow) return false;
+
+            foreach (SCard card in best)
+            {
+                table.Add(new SCardPair(card));
+                _state.Hand.Remove(card);
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Защита от карт противника.
+        /// </summary>
+        /// <param name="table">Текущие карты на столе</param>
+        /// <returns>True если отбился, false если берёт карты</returns>
         public bool Defend(List<SCardPair> table)
         {
-            DeleteFromCardList(table.Select(pair => pair.Down).ToList(), oppHand);
-            isIAttack = false;
+            _state.RemoveCardsFromList(
+                table.Select(p => p.Down).ToList(),
+                _state.OppHand);
+            _state.IsIAttack = false;
 
-            List<List<SCard>> moves = new List<List<SCard>>();
-            bool canDef = FindAllDefMoves(table, moves);
-            if (!canDef) return false;
+            bool canDefend = _generator.GetAllDefenceMoves(table, out List<List<SCard>> moves);
+            if (!canDefend) return false;
 
-            List<SCard> move;
-            canDef = ChooseDefMove(moves, table, out move);
-            if (!canDef) return false;
+            List<SCard> best;
+            bool willDefend = ChooseDefMove(moves, table, out best);
+            if (!willDefend) return false;
 
             int j = 0;
-
             for (int i = 0; i < table.Count; i++)
             {
                 if (!table[i].Beaten)
                 {
                     var pair = table[i];
-
-                    pair.SetUp(move[j], trumpSuit);
-
-                    table[i] = pair; // ✅ сразу по индексу
-
-                    hand.Remove(move[j]);
-
+                    pair.SetUp(best[j], _state.TrumpSuit);
+                    table[i] = pair;
+                    _state.Hand.Remove(best[j]);
                     j++;
                 }
             }
 
             return true;
         }
-        
-       
 
-        // Находит все ходы для защиты
-        public bool FindAllDefMoves(List<SCardPair> table, List<List<SCard>> moves)
+        // --- Выбор лучшего хода ---
+
+        /// <summary>
+        /// Выбирает ход с максимальным score из списка ходов.
+        /// </summary>
+        /// <param name="moves">Список возможных ходов</param>
+        /// <param name="scoreFunc">Функция оценки хода</param>
+        /// <returns>Лучший ход</returns>
+        private List<SCard> ChooseBestMove(List<List<SCard>> moves, Func<List<SCard>, double> scoreFunc)
         {
-            List<SCard> unbeatenCard = new List<SCard>();
-            List<HashSet<SCard>> list = new List<HashSet<SCard>>();
+            List<SCard> best = moves[0];
+            double bestScore = scoreFunc(moves[0]);
 
-
-            foreach (SCardPair pair in table)
-                if (!pair.Beaten)
-                {
-                    HashSet<SCard> set = new HashSet<SCard>();
-                    for (int i = 0; i < hand.Count; i++)
-                        if (SCard.CanBeat(pair.Down, hand[i], trumpSuit))
-                            set.Add(hand[i]);
-                    if (set.Count == 0) return false;
-                    list.Add(set);
-
-                }
-
-            GenerateCombinations(list, moves);
-            return true;
-        }
-
-        // Решает стоит ли защищаться, если да, то как
-        private bool ChooseDefMove(List<List<SCard>> moves, List<SCardPair> table, out List<SCard> move)
-        {
-            move = new List<SCard>();
-            double bestScore = 0;
-            int board = 20;
-
-            foreach (List<SCard> m in moves)
+            foreach (List<SCard> move in moves)
             {
-                double score = DefMoveScore(m, table);
+                double score = scoreFunc(move);
                 if (score > bestScore)
                 {
                     bestScore = score;
-                    move = m;
+                    best = move;
                 }
             }
 
-            return bestScore > board ? true : false;
+            return best;
         }
 
-        // Эта и следующая функция на двоих генерят все возможные защитные ходы
-        // Попробовать избавиться от этой функции
-        public static void GenerateCombinations(List<HashSet<SCard>> sets, List<List<SCard>> moves)
+        /// <summary>
+        /// Выбирает лучший ход для подброса — только если score выше порога.
+        /// </summary>
+        /// <param name="moves">Список возможных ходов</param>
+        /// <param name="scoreFunc">Функция оценки хода</param>
+        /// <param name="best">Выбранный ход (out)</param>
+        /// <returns>True если стоит подбрасывать, false если нет</returns>
+        private bool ChooseThrowMove(List<List<SCard>> moves,
+            Func<List<SCard>, double> scoreFunc, out List<SCard> best)
         {
-            List<SCard> current = new List<SCard>();
-            GenerateRecursive(sets, current, 0, moves);
-        }
+            best = new List<SCard>();
+            double bestScore = 0;
 
-        private static void GenerateRecursive(
-        List<HashSet<SCard>> sets,
-        List<SCard> current,
-        int depth,
-        List<List<SCard>> results)
-        {
-            // Базовый случай: если глубина равна количеству множеств
-            if (depth == sets.Count)
+            foreach (List<SCard> move in moves)
             {
-                results.Add(new List<SCard>(current));
-                return;
-            }
+                if (!move.All(c => _state.Hand.Any(h => h.Rank == c.Rank && h.Suit == c.Suit)))
+                    continue;
 
-            // Перебираем элементы текущего множества
-            foreach (SCard element in sets[depth])
-            {
-                // Проверяем, что элемент уникален в текущей комбинации
-                if (!current.Contains(element))
+                double score = scoreFunc(move);
+                if (score > bestScore)
                 {
-                    // Добавляем элемент в текущую комбинацию
-                    current.Add(element);
-
-                    // Рекурсивно обрабатываем следующее множество
-                    GenerateRecursive(sets, current, depth + 1, results);
-
-                    // Удаляем последний добавленный элемент для возврата к предыдущему состоянию
-                    current.RemoveAt(current.Count - 1);
+                    bestScore = score;
+                    best = move;
                 }
             }
+
+            return bestScore > BotConfig.ThrowDecisionBoard;
         }
 
-        
-
-
-        // Считает эффективность защитного хода
-        private double DefMoveScore(List<SCard> move, List<SCardPair> table)
+        /// <summary>
+        /// Выбирает лучший защитный ход — только если score выше порога.
+        /// </summary>
+        /// <param name="moves">Список возможных ходов</param>
+        /// <param name="table">Текущие карты на столе</param>
+        /// <param name="best">Выбранный ход (out)</param>
+        /// <returns>True если стоит защищаться, false если лучше взять карты</returns>
+        private bool ChooseDefMove(List<List<SCard>> moves, List<SCardPair> table, out List<SCard> best)
         {
+            best = new List<SCard>();
+            double bestScore = 0;
 
-            // Коэфиценты
-            // Коэфицент стадии игры (чем меньше карт осталось, тем он меньше)
-            double stageСoef = GetStageCoef();
-            double difInCardCoef = GetDifInCardCoef();
-
-            //Баффы
-            //Успешность защиты
-            int successfulDef = 30;
-            //Бафф за оптимальность защиты
-            int defInCardRank = GetDifInCardRank(move,table);
-
-
-
-            // Штрафы
-            // Штраф за использование козырей
-            int trumpPenalty = GetTrumpPenalty(move);
-            // Штраф за попытку дэфа, если противник "дарит" козыри
-            int enemyTrumpPenalty = GetEnemyTrumpPenalty(table);
-            // Штраф за потерю пар/троек
-            int lostPairPenalty = GetLostPairPenalty(move);
-
-
-            // Бафф/дебафф за использование одинаковых/разных рангов при дэфе
-            int cardsToDefCount = GetCardsToDefCount(move);
-
-
-
-
-            return (2 - stageСoef) * difInCardCoef * successfulDef + stageСoef * defInCardRank + 
-                stageСoef * trumpPenalty + stageСoef * enemyTrumpPenalty * 0.7 + stageСoef * cardsToDefCount + 
-                lostPairPenalty;
-        }
-
-        // Подсчёт коэфицента разницы в кол-ве кард у бота и противника
-        private double GetDifInCardCoef()
-        {
-            int dif = hand.Count - countOfEnemyCards;
-            if (dif <= 0) return 1;
-            if (dif <= 3) return 1.3;
-            return 1.8;
-        }
-
-        // Подсчёт баффа за то, что проивник отдаёт козыри
-        private int GetEnemyTrumpPenalty(List<SCardPair> table)
-        {
-            int penalty = 0;
-            foreach (SCardPair pair in table) if (pair.Down.Suit == trumpSuit) penalty += 15;
-            return (-1) * penalty;
-        }
-
-        // Бафф/штраф за кол-во разных по рангу использованных карт
-        private int GetCardsToDefCount(List<SCard> move)
-        {
-            List<int> list = new List<int>();
-            foreach (SCard card in move) list.Add(card.Rank);
-            HashSet<int> uniqRank = new HashSet<int>(list);
-            if (uniqRank.Count == 1) return 15;
-            if (uniqRank.Count == 2) return 0;
-            return -15;
-
-        }
-        // Подсчёт баффа за оптимальность защиты
-        private int GetDifInCardRank(List<SCard> move, List<SCardPair> table)
-        {
-            var unbeaten = table.Where(p => !p.Beaten).ToList();
-
-            int difInRank = 0;
-
-            for (int i = 0; i < unbeaten.Count; i++)
+            foreach (List<SCard> move in moves)
             {
-                var down = unbeaten[i].Down;
-                var def = move[i];
-
-                if (def.Suit == trumpSuit && down.Suit != trumpSuit)
-                    difInRank += def.Rank + (14 - down.Rank);
-                else
-                    difInRank += def.Rank - down.Rank;
-            }
-
-            return 65 - difInRank;
-        }
-        // Подсчёт штрафа за потерю пар/троек (логика немного ошибочная, желательно поправить)
-        private int GetLostPairPenalty(List<SCard> move)
-        {
-            int count = (-1) * move.Count;
-
-            foreach (SCard defCard in move)
-            {
-                foreach (SCard card in hand)
+                double score = _scorer.DefMoveScore(move, table);
+                if (score > bestScore)
                 {
-                    if (defCard.Rank ==  card.Rank) count++;
+                    bestScore = score;
+                    best = move;
                 }
             }
 
-            return (-3) * count;
-            ;
+            return bestScore > BotConfig.DefDecisionBoard;
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-        // Другое
-        // Хуй знает что это, хуй знает как работает, написано ии, по-хорошему переделать
-        private void ChangeListOfCard(List<SCardPair> table, bool IsDefenceSuccesful)
-        {
-            List<SCard> cardOnTable = table.SelectMany(pair => new[] { pair.Down, pair.Up }).ToList();
-            DeleteFromCardList(cardOnTable, remainingDeck);
-            if (isIAttack && !IsDefenceSuccesful) oppHand.AddRange(cardOnTable);
-        }
-
-        
-
-        private void DeleteFromCardList(List<SCard> cardsForDelete, List<SCard> cardsFromDelete)
-        {
-            // ========== НОВАЯ ЗАЩИТА ==========
-            if (cardsForDelete == null || cardsFromDelete == null) return;
-            if (cardsForDelete.Count == 0 || cardsFromDelete.Count == 0) return;
-            // ========== КОНЕЦ ЗАЩИТЫ ==========
-
-            for (int i = 0; i < cardsForDelete.Count; i++)
-            {
-                for (int j = 0; j < cardsFromDelete.Count; j++)
-                {
-                    // Добавим проверку индексов
-                    if (j >= cardsFromDelete.Count) break;
-
-                    if (cardsForDelete[i].Rank == cardsFromDelete[j].Rank &&
-                        cardsForDelete[i].Suit == cardsFromDelete[j].Suit)
-                    {
-                        cardsFromDelete.RemoveAt(j);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Функция от Федоса, считает кол-во карт на руке проивника и в прикупе
-        private void ChangeCountsOfCard(List<SCardPair> table, bool IsDefenceSuccesful)
-        {
-
-            int en1 = IsDefenceSuccesful || isIAttack ? Math.Max(0, 6 - (hand.Count)) : 0;
-            int en2 = IsDefenceSuccesful || !isIAttack ? Math.Max(0, 6 - (countOfEnemyCards - table.Count)) : 0;
-
-            if (remainingDeckCount >= en1 + en2 && (!isIAttack || IsDefenceSuccesful)) countOfEnemyCards = Math.Max(6, countOfEnemyCards - table.Count);
-            else if (isIAttack && !IsDefenceSuccesful) countOfEnemyCards += table.Count;
-            else if (remainingDeckCount < en1 + en2)
-            {
-                countOfEnemyCards -= table.Count;
-                if (isIAttack) countOfEnemyCards += en2 != 0 ? Math.Max(0, remainingDeckCount - en1) : 0;
-                else countOfEnemyCards += Math.Min(en2, remainingDeckCount);
-            }
-
-            if (remainingDeckCount >= en1 + en2) remainingDeckCount -= en1 + en2;
-            else remainingDeckCount = 0;
-        }
-
-
-       
-
     }
 
+    // ================================================================
+    #region Archive
+    // ================================================================
+    // Старые версии методов до рефакторинга.
+    // Регион можно свернуть в IDE.
+    // ================================================================
 
+    // --- Из MPlayer1 ---
+
+    // GetStageCoef (логика без изменений, перенесена в Scorer)
+    // private double GetStageCoef()
+    // {
+    //     if (remainingDeckCount == 0) return 0.228;   // super late game
+    //     if (remainingDeckCount < 9)  return 67;      // late game
+    //     if (remainingDeckCount < 17) return 9.11;    // mid game
+    //     return 1488;                                  // early game
+    // }
+
+    // GetPairAndTrioBuff (переименован в GetPairAndTrioBuff, перенесён в Scorer)
+    // private int GetPairAndTrioBuff(List<SCard> cards)
+    // {
+    //     if (cards.Count == 2) return 13;
+    //     if (cards.Count == 3) return 23;
+    //     return 0;
+    // }
+
+    // GetSuccessBuff (логика без изменений, перенесена в Scorer.GetSuccessBuff)
+    // private double GetSuccessBuff(List<SCard> move) { ... }
+
+    // GetEnemyChanceToDeff (удалена как неиспользуемая)
+    // private double GetEnemyChanceToDeff(List<SCard> attCards) { ... }
+
+    // GetTrumpPenalty (логика без изменений, перенесена в Scorer)
+    // private int GetTrumpPenalty(List<SCard> cards) { ... }
+
+    // GetLastCardPenalty (логика без изменений, перенесена в Scorer)
+    // private int GetLastCardPenalty(List<SCard> cards) { ... }
+
+    // GetChaepMoveBuff (переименован в GetCheapMoveBuff, перенесён в Scorer)
+    // private double GetChaepMoveBuff(List<SCard> cards) { ... }
+
+    // GetSAveGameCoef (переименован в GetSaveGameCoef, перенесён в Scorer)
+    // private double GetSAveGameCoef() { ... }
+
+    // GetNoSuitCard (переименован в GetNoSuitBuff, перенесён в Scorer)
+    // private int GetNoSuitCard(List<SCard> attCards) { ... }
+
+    // GetCardOnHandBuff (логика без изменений, перенесена в Scorer)
+    // private int GetCardOnHandBuff() { ... }
+
+    // GetCardPriceControl (логика без изменений, перенесена в Scorer)
+    // private int GetCardPriceControl(List<SCard> throw_cards) { ... }
+
+    // GetDifInCardCoef (логика без изменений, перенесена в Scorer)
+    // private double GetDifInCardCoef() { ... }
+
+    // GetEnemyTrumpPenalty (логика без изменений, перенесена в Scorer)
+    // private int GetEnemyTrumpPenalty(List<SCardPair> table) { ... }
+
+    // GetCardsToDefCount (переименован в GetSameRankDefBuff, перенесён в Scorer)
+    // private int GetCardsToDefCount(List<SCard> move) { ... }
+
+    // GetDifInCardRank (переименован в GetDefOptimalBuff, перенесён в Scorer)
+    // private int GetDifInCardRank(List<SCard> move, List<SCardPair> table) { ... }
+
+    // GetLostPairPenalty (логика без изменений, перенесена в Scorer)
+    // private int GetLostPairPenalty(List<SCard> move) { ... }
+
+    // CompareCards (перенесён внутрь GameStateTracker.SortOppHand как лямбда)
+    // private int CompareCards(SCard a, SCard b, Suits trumpSuit) { ... }
+
+    // ChangeListOfCard (переименован в UpdateCardLists, перенесён в GameStateTracker)
+    // private void ChangeListOfCard(List<SCardPair> table, bool IsDefenceSuccesful) { ... }
+
+    // DeleteFromCardList (переименован в RemoveCardsFromList, перенесён в GameStateTracker)
+    // private void DeleteFromCardList(List<SCard> cardsForDelete, List<SCard> cardsFromDelete) { ... }
+
+    // ChangeCountsOfCard (переименован в UpdateCounts, перенесён в GameStateTracker)
+    // private void ChangeCountsOfCard(List<SCardPair> table, bool IsDefenceSuccesful) { ... }
+
+    // FindAllAttackMoves (переименован в GetAllAttackMoves, перенесён в MoveGenerator)
+    // private List<List<SCard>> FindAllAttackMoves() { ... }
+
+    // FindAllThrowMove (переименован в GetAllThrowMoves, перенесён в MoveGenerator)
+    // private List<List<SCard>> FindAllThrowMove(List<SCardPair> table, int limit) { ... }
+
+    // Gen (переименован в GenerateCombinations, перенесён в MoveGenerator)
+    // private void Gen(...) { ... }
+
+    // FindAllDefMoves (переименован в GetAllDefenceMoves, перенесён в MoveGenerator)
+    // public bool FindAllDefMoves(List<SCardPair> table, List<List<SCard>> moves) { ... }
+
+    // GenerateCombinations (переименован в GenerateDefenceCombinations, перенесён в MoveGenerator)
+    // public static void GenerateCombinations(...) { ... }
+
+    // GenerateRecursive (переименован в GenerateDefenceRecursive, перенесён в MoveGenerator)
+    // private static void GenerateRecursive(...) { ... }
+
+    #endregion
 }
