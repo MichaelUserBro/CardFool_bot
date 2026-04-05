@@ -42,32 +42,6 @@ namespace CardFool
             Console.WriteLine($"Winrate of first player: {winrate}%");
 
 
-            //MPlayer1 player1 = new MPlayer1();
-
-            //List<SCard> testHand1 = new List<SCard>
-            //		 {
-            //			 new SCard(Suits.Hearts, 6),
-            //			 new SCard(Suits.Spades, 7),
-            //			 new SCard(Suits.Hearts, 8),
-            //			 new SCard(Suits.Hearts, 9),
-
-            //		 };
-            //foreach (var card in testHand1) player1.AddToHand(card);
-            //var table = new List<SCardPair>
-            //		 {
-            //			 new SCardPair(new SCard(Suits.Spades, 6)),
-            //			 new SCardPair(new SCard(Suits.Diamonds, 7))
-            //		 };
-
-            //List<List<SCard>> list = player1.FindAllThrowMove(table, 4);
-
-            //foreach (var l in list)
-            //{
-            //	foreach (var c in l) Console.Write(c + " ");
-            //             Console.WriteLine();
-            //}
-
-
 
             return 0;
 
@@ -141,10 +115,12 @@ namespace CardFool
 			}
 		}
 
-		/// <summary>
-		/// Инициализация Колоды 
-		/// </summary>
-		public virtual void InitDeck()
+        
+
+        /// <summary>
+        /// Инициализация Колоды 
+        /// </summary>
+        public virtual void InitDeck()
 		{
 			List<SCard> temp = MGameRules.GetDeck();
 
@@ -259,9 +235,10 @@ namespace CardFool
 
 			// Добавляем игрокам карты из колоды
 			AddCards();
+            
 
-			// Если игрок защитился даём ему ход
-			if (RoundResult == EndRound.Defend) 
+            // Если игрок защитился даём ему ход
+            if (RoundResult == EndRound.Defend) 
 				IsFirstAttacking = !IsFirstAttacking;
 
 			//Собираем информацию о игроках

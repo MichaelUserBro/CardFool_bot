@@ -110,8 +110,25 @@ namespace CardFool
         /// <summary>Карты на руке бота</summary>
         public List<SCard> Hand { get; private set; } = new List<SCard>();
 
-        /// <summary>Предполагаемые карты противника</summary>
-        public List<SCard> OppHand { get; set; } = new List<SCard>();
+        /// <summary>Карты которые точно есть у противника (видели как он брал)</summary>
+        public List<SCard> OppHandKnown { get; set; } = new List<SCard>();
+
+        /// <summary>Карты которые могут быть у противника (мы их не видели)</summary>
+        public List<SCard> OppHandPossible { get; set; } = new List<SCard>();
+
+        /// <summary>
+        /// Полная предполагаемая рука противника.
+        /// Когда колода пуста — это точные данные.
+        /// </summary>
+        public List<SCard> OppHand
+        {
+            get
+            {
+                List<SCard> full = new List<SCard>(OppHandKnown);
+                full.AddRange(OppHandPossible);
+                return full;
+            }
+        }
 
         /// <summary>Предполагаемые оставшиеся карты в колоде</summary>
         public List<SCard> RemainingDeck { get; private set; } = new List<SCard>();
@@ -136,6 +153,7 @@ namespace CardFool
         {
             TrumpSuit = trump.Suit;
             RemainingDeck = MGameRules.GetDeck();
+            OppHandPossible = MGameRules.GetDeck();
         }
 
         /// <summary>
@@ -145,6 +163,8 @@ namespace CardFool
         public void AddToHand(SCard card)
         {
             Hand.Add(card);
+            List<SCard> temp = new List<SCard> { card };
+            RemoveCardsFromList(temp, OppHandPossible);
         }
 
         /// <summary>
@@ -196,6 +216,56 @@ namespace CardFool
         /// </summary>
         private void UpdateCardLists(List<SCardPair> table, bool isDefenceSuccessful)
         {
+            if (IsIAttack)
+            {
+                if (isDefenceSuccessful)
+                {
+                    // Противник отбился — убираем его карты защиты из Known и Possible
+                    for (int i = 0; i < table.Count; i++)
+                    {
+                        if (!table[i].Beaten) continue;
+                        List<SCard> played = new List<SCard> { table[i].Up };
+                        RemoveCardsFromList(played, OppHandKnown);
+                        RemoveCardsFromList(played, OppHandPossible);
+                    }
+                }
+                else
+                {
+                    // Противник взял все карты — добавляем в Known только если там ещё нет
+                    for (int i = 0; i < table.Count; i++)
+                    {
+                        SCard down = table[i].Down;
+                        bool alreadyKnown = false;
+                        for (int j = 0; j < OppHandKnown.Count; j++)
+                            if (OppHandKnown[j].Rank == down.Rank && OppHandKnown[j].Suit == down.Suit)
+                            { alreadyKnown = true; break; }
+                        if (!alreadyKnown) OppHandKnown.Add(down);
+
+                        if (table[i].Beaten)
+                        {
+                            SCard up = table[i].Up;
+                            bool alreadyKnownUp = false;
+                            for (int j = 0; j < OppHandKnown.Count; j++)
+                                if (OppHandKnown[j].Rank == up.Rank && OppHandKnown[j].Suit == up.Suit)
+                                { alreadyKnownUp = true; break; }
+                            if (!alreadyKnownUp) OppHandKnown.Add(up);
+                        }
+                    }
+                    RemoveCardsFromList(OppHandKnown, OppHandPossible);
+                }
+            }
+            else
+            {
+                // Противник атаковал — убираем его карты атаки из Known и Possible
+                for (int i = 0; i < table.Count; i++)
+                {
+                    List<SCard> played = new List<SCard> { table[i].Down };
+                    RemoveCardsFromList(played, OppHandKnown);
+                    RemoveCardsFromList(played, OppHandPossible);
+                }
+            }
+
+            // Все карты со стола убираем из RemainingDeck
             List<SCard> cardsOnTable = new List<SCard>();
             for (int i = 0; i < table.Count; i++)
             {
@@ -203,11 +273,7 @@ namespace CardFool
                 if (table[i].Beaten)
                     cardsOnTable.Add(table[i].Up);
             }
-
             RemoveCardsFromList(cardsOnTable, RemainingDeck);
-
-            if (IsIAttack && !isDefenceSuccessful)
-                OppHand.AddRange(cardsOnTable);
         }
 
         /// <summary>
@@ -240,7 +306,15 @@ namespace CardFool
         /// </summary>
         public void SortOppHand()
         {
-            OppHand.Sort((a, b) =>
+            OppHandKnown.Sort((a, b) =>
+            {
+                int aType = (a.Suit == TrumpSuit) ? 1 : 0;
+                int bType = (b.Suit == TrumpSuit) ? 1 : 0;
+                if (aType != bType) return aType - bType;
+                return a.Rank - b.Rank;
+            });
+
+            OppHandPossible.Sort((a, b) =>
             {
                 int aType = (a.Suit == TrumpSuit) ? 1 : 0;
                 int bType = (b.Suit == TrumpSuit) ? 1 : 0;
@@ -650,7 +724,7 @@ namespace CardFool
         /// </summary>
         private int GetNoSuitBuff(List<SCard> cards)
         {
-            if (_state.OppHand.Count <= BotConfig.NoSuitEnemyThreshold &&
+            if (_state.OppHandKnown.Count <= BotConfig.NoSuitEnemyThreshold &&
                 _state.OppCardCount > BotConfig.NoSuitEnemyThreshold)
                 return 0;
 
@@ -660,7 +734,7 @@ namespace CardFool
                     suitCounts[(int)card.Suit]++;
 
             bool[] oppHasSuit = new bool[4];
-            foreach (SCard card in _state.OppHand)
+            foreach (SCard card in _state.OppHandKnown)
                 oppHasSuit[(int)card.Suit] = true;
 
             int buff = 0;
@@ -704,14 +778,14 @@ namespace CardFool
         /// </summary>
         private double GetSuccessBuff(List<SCard> move)
         {
-            bool[] used = new bool[_state.OppHand.Count];
+            bool[] used = new bool[_state.OppHandKnown.Count];
 
             foreach (SCard attackCard in move)
             {
                 bool found = false;
-                for (int i = 0; i < _state.OppHand.Count; i++)
+                for (int i = 0; i < _state.OppHandKnown.Count; i++)
                 {
-                    if (!used[i] && SCard.CanBeat(attackCard, _state.OppHand[i], _state.TrumpSuit))
+                    if (!used[i] && SCard.CanBeat(attackCard, _state.OppHandKnown[i], _state.TrumpSuit))
                     {
                         used[i] = true;
                         found = true;
@@ -723,11 +797,11 @@ namespace CardFool
             }
 
             double oppPower = 0;
-            for (int i = 0; i < _state.OppHand.Count; i++)
+            for (int i = 0; i < _state.OppHandKnown.Count; i++)
             {
                 if (used[i]) continue;
-                oppPower += _state.OppHand[i].Rank;
-                if (_state.OppHand[i].Suit == _state.TrumpSuit) oppPower += 14;
+                oppPower += _state.OppHandKnown[i].Rank;
+                if (_state.OppHandKnown[i].Suit == _state.TrumpSuit) oppPower += 14;
             }
 
             return -oppPower;
@@ -838,10 +912,13 @@ namespace CardFool
 
     public class MPlayer1
     {
-        private readonly string _name = "ЕКБ 3.1";
+        private readonly string _name = "ЕКБ 3.3";
         private readonly GameStateTracker _state = new GameStateTracker();
         private readonly MoveGenerator _generator;
         private readonly Scorer _scorer;
+
+
+        
 
         public MPlayer1()
         {
@@ -940,7 +1017,6 @@ namespace CardFool
             for (int i = 0; i < table.Count; i++)
                 attackCards.Add(table[i].Down);
 
-            _state.RemoveCardsFromList(attackCards, _state.OppHand);
             _state.IsIAttack = false;
 
             bool canDefend = _generator.GetAllDefenceMoves(table, out List<List<SCard>> moves);

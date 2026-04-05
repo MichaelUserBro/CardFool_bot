@@ -8,6 +8,12 @@ namespace CardFool
         private string Name = "Second";
         private List<SCard> hand = new List<SCard>();       // карты на руке
         private Suits trump_suit;
+
+
+        // ВРЕМЕННЫЙ метод для отладки
+        public List<SCard> GetHand() => hand;
+
+
         // Возвращает имя игрока
         public string GetName()
         {
