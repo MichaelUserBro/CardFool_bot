@@ -196,9 +196,12 @@ namespace CardFool
         /// </summary>
         private void UpdateCardLists(List<SCardPair> table, bool isDefenceSuccessful)
         {
-            List<SCard> cardsOnTable = table
-                .SelectMany(pair => new[] { pair.Down, pair.Up })
-                .ToList();
+            List<SCard> cardsOnTable = new List<SCard>();
+            for (int i = 0; i < table.Count; i++)
+            {
+                cardsOnTable.Add(table[i].Down);
+                cardsOnTable.Add(table[i].Up);
+            }
 
             RemoveCardsFromList(cardsOnTable, RemainingDeck);
 
@@ -734,18 +737,21 @@ namespace CardFool
             return -oppPower;
         }
 
-        /// <summary>
+        /// <summary>ы
         /// Бафф за оптимальность защиты — чем меньше тратим на отбитие, тем лучше.
         /// </summary>
         private int GetDefOptimalBuff(List<SCard> move, List<SCardPair> table)
         {
-            var unbeaten = table.Where(p => !p.Beaten).ToList();
             int difInRank = 0;
+            int j = 0;
 
-            for (int i = 0; i < unbeaten.Count; i++)
+            for (int i = 0; i < table.Count; i++)
             {
-                SCard down = unbeaten[i].Down;
-                SCard def = move[i];
+                if (table[i].Beaten) continue;
+
+                SCard down = table[i].Down;
+                SCard def = move[j];
+                j++;
 
                 if (def.Suit == _state.TrumpSuit && down.Suit != _state.TrumpSuit)
                     difInRank += def.Rank + (14 - down.Rank);
@@ -836,7 +842,7 @@ namespace CardFool
 
     public class MPlayer1
     {
-        private readonly string _name = "ЕКБ 3.0";
+        private readonly string _name = "ЕКБ 3.1";
         private readonly GameStateTracker _state = new GameStateTracker();
         private readonly MoveGenerator _generator;
         private readonly Scorer _scorer;
@@ -934,16 +940,17 @@ namespace CardFool
         /// <returns>True если отбился, false если берёт карты</returns>
         public bool Defend(List<SCardPair> table)
         {
-            _state.RemoveCardsFromList(
-                table.Select(p => p.Down).ToList(),
-                _state.OppHand);
+            List<SCard> attackCards = new List<SCard>();
+            for (int i = 0; i < table.Count; i++)
+                attackCards.Add(table[i].Down);
+
+            _state.RemoveCardsFromList(attackCards, _state.OppHand);
             _state.IsIAttack = false;
 
             bool canDefend = _generator.GetAllDefenceMoves(table, out List<List<SCard>> moves);
             if (!canDefend) return false;
 
-            List<SCard> best;
-            bool willDefend = ChooseDefMove(moves, table, out best);
+            bool willDefend = ChooseDefMove(moves, table, out List<SCard> best);
             if (!willDefend) return false;
 
             int j = 0;
