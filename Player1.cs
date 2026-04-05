@@ -200,7 +200,8 @@ namespace CardFool
             for (int i = 0; i < table.Count; i++)
             {
                 cardsOnTable.Add(table[i].Down);
-                cardsOnTable.Add(table[i].Up);
+                if (table[i].Beaten)
+                    cardsOnTable.Add(table[i].Up);
             }
 
             RemoveCardsFromList(cardsOnTable, RemainingDeck);
@@ -221,7 +222,7 @@ namespace CardFool
 
             for (int i = 0; i < toRemove.Count; i++)
             {
-                for (int j = 0; j < source.Count; j++)
+                for (int j = source.Count - 1; j >= 0; j--)
                 {
                     if (toRemove[i].Rank == source[j].Rank &&
                         toRemove[i].Suit == source[j].Suit)
@@ -274,9 +275,10 @@ namespace CardFool
         /// <returns>Список возможных ходов, каждый ход — список карт</returns>
         public List<List<SCard>> GetAllAttackMoves()
         {
-            List<List<SCard>> allMoves = new List<List<SCard>>();
+            
             List<SCard> hand = _state.Hand;
             int enemyCount = _state.OppCardCount;
+            List<List<SCard>> allMoves = new List<List<SCard>>(20);
 
             foreach (SCard card in hand)
                 allMoves.Add(new List<SCard> { card });
@@ -326,7 +328,7 @@ namespace CardFool
             if (throwable.Count == 0) return allMoves;
 
             int maxToThrow = Math.Min(throwable.Count, limit);
-            List<SCard> buffer = new List<SCard>();
+            List<SCard> buffer = new List<SCard>(maxToThrow);
 
             for (int i = 1; i <= maxToThrow; i++)
                 GenerateCombinations(throwable, i, 0, buffer, allMoves);
@@ -341,21 +343,16 @@ namespace CardFool
         /// <returns>Список уникальных рангов</returns>
         private List<int> GetRanksOnTable(List<SCardPair> table)
         {
-            List<int> ranks = new List<int>();
+            HashSet<int> ranksSet = new HashSet<int>();
 
             for (int i = 0; i < table.Count; i++)
             {
-                int rankDown = table[i].Down.Rank;
-                if (!ranks.Contains(rankDown)) ranks.Add(rankDown);
-
+                ranksSet.Add(table[i].Down.Rank);
                 if (table[i].Beaten)
-                {
-                    int rankUp = table[i].Up.Rank;
-                    if (!ranks.Contains(rankUp)) ranks.Add(rankUp);
-                }
+                    ranksSet.Add(table[i].Up.Rank);
             }
 
-            return ranks;
+            return new List<int>(ranksSet);
         }
 
         /// <summary>
@@ -448,7 +445,7 @@ namespace CardFool
         }
 
         private void GenerateDefenceRecursive(List<HashSet<SCard>> options, List<SCard> current,
-            int depth, List<List<SCard>> results)
+        int depth, List<List<SCard>> results)
         {
             if (depth == options.Count)
             {
@@ -458,7 +455,17 @@ namespace CardFool
 
             foreach (SCard card in options[depth])
             {
-                if (current.Contains(card)) continue;
+                bool alreadyUsed = false;
+                for (int i = 0; i < current.Count; i++)
+                {
+                    if (current[i].Rank == card.Rank && current[i].Suit == card.Suit)
+                    {
+                        alreadyUsed = true;
+                        break;
+                    }
+                }
+                if (alreadyUsed) continue;
+
                 current.Add(card);
                 GenerateDefenceRecursive(options, current, depth + 1, results);
                 current.RemoveAt(current.Count - 1);
@@ -697,42 +704,31 @@ namespace CardFool
         /// </summary>
         private double GetSuccessBuff(List<SCard> move)
         {
-            List<SCard> removed = new List<SCard>();
+            bool[] used = new bool[_state.OppHand.Count];
 
             foreach (SCard attackCard in move)
             {
-                int bestIdx = -1;
+                bool found = false;
                 for (int i = 0; i < _state.OppHand.Count; i++)
                 {
-                    if (SCard.CanBeat(attackCard, _state.OppHand[i], _state.TrumpSuit))
+                    if (!used[i] && SCard.CanBeat(attackCard, _state.OppHand[i], _state.TrumpSuit))
                     {
-                        bestIdx = i;
+                        used[i] = true;
+                        found = true;
                         break;
                     }
                 }
 
-                if (bestIdx != -1)
-                {
-                    removed.Add(_state.OppHand[bestIdx]);
-                    _state.OppHand.RemoveAt(bestIdx);
-                }
-                else
-                {
-                    foreach (SCard r in removed) _state.OppHand.Add(r);
-                    _state.SortOppHand();
-                    return BotConfig.SuccessFailPenalty;
-                }
+                if (!found) return BotConfig.SuccessFailPenalty;
             }
 
             double oppPower = 0;
-            foreach (SCard card in _state.OppHand)
+            for (int i = 0; i < _state.OppHand.Count; i++)
             {
-                oppPower += card.Rank;
-                if (card.Suit == _state.TrumpSuit) oppPower += 14;
+                if (used[i]) continue;
+                oppPower += _state.OppHand[i].Rank;
+                if (_state.OppHand[i].Suit == _state.TrumpSuit) oppPower += 14;
             }
-
-            foreach (SCard r in removed) _state.OppHand.Add(r);
-            _state.SortOppHand();
 
             return -oppPower;
         }
@@ -1003,15 +999,30 @@ namespace CardFool
         /// <param name="best">Выбранный ход (out)</param>
         /// <returns>True если стоит подбрасывать, false если нет</returns>
         private bool ChooseThrowMove(List<List<SCard>> moves,
-            Func<List<SCard>, double> scoreFunc, out List<SCard> best)
+        Func<List<SCard>, double> scoreFunc, out List<SCard> best)
         {
             best = new List<SCard>();
             double bestScore = 0;
 
             foreach (List<SCard> move in moves)
             {
-                if (!move.All(c => _state.Hand.Any(h => h.Rank == c.Rank && h.Suit == c.Suit)))
-                    continue;
+                bool allInHand = true;
+                for (int i = 0; i < move.Count; i++)
+                {
+                    bool found = false;
+                    for (int j = 0; j < _state.Hand.Count; j++)
+                    {
+                        if (_state.Hand[j].Rank == move[i].Rank &&
+                            _state.Hand[j].Suit == move[i].Suit)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) { allInHand = false; break; }
+                }
+
+                if (!allInHand) continue;
 
                 double score = scoreFunc(move);
                 if (score > bestScore)
