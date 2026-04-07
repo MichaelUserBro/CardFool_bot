@@ -92,7 +92,7 @@ namespace CardFool
         public const int DiffRankDefPenalty = -15;
 
         // --- Штраф за потерю пар (GetLostPairPenalty) ---
-        public const int LostPairPenMult = -3;
+        public const double LostPairPenMult = -4;
 
         // --- Размер колоды ---
         public const int FullDeckSize = 24;
@@ -579,7 +579,7 @@ namespace CardFool
             int pairBuff = GetPairAndTrioBuff(attackCards);
             double successBuff = GetSuccessBuff(attackCards);
             double cheapBuff = GetCheapMoveBuff(attackCards);
-            int noSuitBuff = GetNoSuitBuff(attackCards);
+            double noSuitBuff = GetNoSuitBuff(attackCards);
             int trumpPenalty = GetTrumpPenalty(attackCards);
             int lastCardPen = GetLastCardPenalty(attackCards);
 
@@ -620,7 +620,7 @@ namespace CardFool
             double stageCoef = GetStageCoef();
             int handBuff = GetCardOnHandBuff();
             double successBuff = GetSuccessBuff(throwCards);
-            int noSuitBuff = GetNoSuitBuff(throwCards);
+            double noSuitBuff = GetNoSuitBuff(throwCards);
             int trumpPenalty = GetTrumpPenalty(throwCards);
             int lastCardPen = GetLastCardPenalty(throwCards);
 
@@ -641,12 +641,12 @@ namespace CardFool
         {
             double stageCoef = GetStageCoef();
             double difCardCoef = GetDifInCardCoef();
+            double lostPairPen = GetLostPairPenalty(move);
 
             int successDef = BotConfig.SuccessfulDefBuff;
             int defOptimal = GetDefOptimalBuff(move, table);
             int trumpPenalty = GetTrumpPenalty(move);
             int enemyTrumpPen = GetEnemyTrumpPenalty(table);
-            int lostPairPen = GetLostPairPenalty(move);
             int sameRankBuff = GetSameRankDefBuff(move);
 
             return (BotConfig.DefNoSuitBase - stageCoef) * difCardCoef * successDef
@@ -722,27 +722,48 @@ namespace CardFool
         /// <summary>
         /// Бафф за атаку картой масти, которой нет у противника.
         /// </summary>
-        private int GetNoSuitBuff(List<SCard> cards)
+        private double GetNoSuitBuff(List<SCard> cards)
         {
-            if (_state.OppHandKnown.Count <= BotConfig.NoSuitEnemyThreshold &&
-                _state.OppCardCount > BotConfig.NoSuitEnemyThreshold)
-                return 0;
+            double buff = 0;
 
             int[] suitCounts = new int[4];
             foreach (SCard card in cards)
                 if (card.Suit != _state.TrumpSuit)
                     suitCounts[(int)card.Suit]++;
 
-            bool[] oppHasSuit = new bool[4];
-            foreach (SCard card in _state.OppHandKnown)
-                oppHasSuit[(int)card.Suit] = true;
+            if (_state.OppHandKnown.Count > BotConfig.NoSuitEnemyThreshold &&
+                _state.OppCardCount < BotConfig.NoSuitEnemyThreshold)
+            {
 
-            int buff = 0;
-            for (int suit = 0; suit < 4; suit++)
-                if (suitCounts[suit] > 0 && !oppHasSuit[suit])
-                    buff += BotConfig.NoSuitBuff * suitCounts[suit];
+                bool[] oppHasSuit = new bool[4];
+                foreach (SCard card in _state.OppHandKnown)
+                    oppHasSuit[(int)card.Suit] = true;
 
-            return buff;
+                for (int suit = 0; suit < 4; suit++)
+                    if (suitCounts[suit] > 0 && !oppHasSuit[suit])
+                        buff += BotConfig.NoSuitBuff * suitCounts[suit];
+
+                return buff;
+            }
+
+            else
+            {
+                int[] oppHasSuit = new int[4];
+                foreach (SCard card in _state.OppHandPossible)
+                    oppHasSuit[(int)card.Suit] += 1;
+
+                if (_state.OppHandPossible.Count == 0) return buff;
+
+                for (int suit = 0; suit < 4; suit++)
+                    if (suitCounts[suit] > 0)
+                    {
+                        double prob = 1.0 - (double)oppHasSuit[suit] / _state.OppHandPossible.Count;
+                        buff += BotConfig.NoSuitBuff * suitCounts[suit] * prob;
+                    }
+
+                return buff;
+
+            }
         }
 
         /// <summary>
@@ -761,14 +782,22 @@ namespace CardFool
         /// </summary>
         private int GetCardPriceControl(List<SCard> throwCards)
         {
+  
             int score = 0;
             foreach (SCard card in throwCards)
             {
-                if (card.Rank <= 9 && card.Suit != _state.TrumpSuit)
+
+                int count = 0;
+                for (int i = 0; i < _state.OppHandKnown.Count; i++)
+                    if (_state.OppHandKnown[i].Rank == card.Rank) count++;
+
+                if (count > 0) score -= card.Rank * count;
+                else if (card.Rank <= 9 && card.Suit != _state.TrumpSuit)
                     score += card.Rank;
                 else if (card.Rank > 9 && card.Suit != _state.TrumpSuit)
                     score -= card.Rank;
             }
+
             return score;
         }
 
@@ -895,14 +924,14 @@ namespace CardFool
         /// <summary>
         /// Штраф за потерю пар и троек при защите.
         /// </summary>
-        private int GetLostPairPenalty(List<SCard> move)
+        private double GetLostPairPenalty(List<SCard> move)
         {
             int count = -move.Count;
             foreach (SCard defCard in move)
                 foreach (SCard handCard in _state.Hand)
                     if (defCard.Rank == handCard.Rank)
                         count++;
-            return BotConfig.LostPairPenMult * count;
+            return count > 0 ? BotConfig.LostPairPenMult * count : 0;
         }
     }
 
@@ -1024,6 +1053,8 @@ namespace CardFool
 
             bool willDefend = ChooseDefMove(moves, table, out List<SCard> best);
             if (!willDefend) return false;
+
+                
 
             int j = 0;
             for (int i = 0; i < table.Count; i++)
