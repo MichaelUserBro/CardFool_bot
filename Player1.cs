@@ -64,11 +64,12 @@ namespace CardFool
         public const int HandThreshold_Large = 13;
 
         // --- Скоринг подброса ---
-        public const double ThrowScoreBase = 2.5;
-        public const double GiveScoreBase = 2.5;
+        public const double ThrowScoreBase = 4.5;
+        public const double GiveScoreBase = 4.5;
+        public const double GiveWillingnessMult = 15.0;
 
         // --- Пороги решения "делать ход или нет" ---
-        public const int ThrowDecisionBoard = 20;
+        public const int ThrowDecisionBoard = 10;
         public const int DefDecisionBoard = 20;
 
         // --- Скоринг защиты ---
@@ -599,12 +600,14 @@ namespace CardFool
         public double GiveCardScore(List<SCard> throwCards)
         {
             double stageCoef = GetStageCoef();
-            int handBuff = GetCardOnHandBuff();
+            int cardDiff = _state.Hand.Count - _state.OppCardCount;
+            double throwWillingness = cardDiff * BotConfig.GiveWillingnessMult * stageCoef;
+
             int priceControl = GetCardPriceControl(throwCards);
             int trumpPenalty = GetTrumpPenalty(throwCards);
             int lastCardPen = GetLastCardPenalty(throwCards);
 
-            return (BotConfig.GiveScoreBase - stageCoef) * handBuff
+            return throwWillingness
                  + stageCoef * priceControl
                  + stageCoef * trumpPenalty
                  + stageCoef * lastCardPen;
@@ -935,6 +938,10 @@ namespace CardFool
         }
     }
 
+
+   
+
+
     // ================================================================
     //  MPlayer1 — публичный интерфейс бота
     // ================================================================
@@ -945,15 +952,17 @@ namespace CardFool
         private readonly GameStateTracker _state = new GameStateTracker();
         private readonly MoveGenerator _generator;
         private readonly Scorer _scorer;
+    
 
 
-        
+
 
         public MPlayer1()
         {
             _generator = new MoveGenerator(_state);
             _scorer = new Scorer(_state);
         }
+        public List<SCard> GetHand() => _state.Hand;
 
         // --- Обязательный интерфейс ---
 
@@ -971,7 +980,11 @@ namespace CardFool
         /// Инициализация козыря перед первой раздачей.
         /// </summary>
         /// <param name="newTrump">Козырная карта</param>
-        public void SetTrump(SCard newTrump) => _state.Initialize(newTrump);
+        public void SetTrump(SCard newTrump)
+        {
+            _state.Initialize(newTrump);
+            
+        }
 
         /// <summary>
         /// Вызывается в конце раунда — обновляет состояние игры.
@@ -991,6 +1004,8 @@ namespace CardFool
         {
             _state.RemoveCardsFromList(_state.Hand, _state.RemainingDeck);
             _state.IsIAttack = true;
+
+            
 
             List<List<SCard>> allMoves = _generator.GetAllAttackMoves();
             List<SCard> best = ChooseBestMove(allMoves, _scorer.AttackMoveScore);
@@ -1016,6 +1031,10 @@ namespace CardFool
             List<List<SCard>> moves = _generator.GetAllThrowMoves(table, limit);
             if (moves.Count == 0) return false;
 
+            
+            
+
+            // --- Эвристика для остальных случаев ---
             List<SCard> best;
             bool willThrow;
 
@@ -1051,8 +1070,10 @@ namespace CardFool
             bool canDefend = _generator.GetAllDefenceMoves(table, out List<List<SCard>> moves);
             if (!canDefend) return false;
 
-            bool willDefend = ChooseDefMove(moves, table, out List<SCard> best);
-            if (!willDefend) return false;
+            
+
+            bool willDefend2 = ChooseDefMove(moves, table, out List<SCard> best2);
+            if (!willDefend2) return false;
 
                 
 
@@ -1062,9 +1083,9 @@ namespace CardFool
                 if (!table[i].Beaten)
                 {
                     var pair = table[i];
-                    pair.SetUp(best[j], _state.TrumpSuit);
+                    pair.SetUp(best2[j], _state.TrumpSuit);
                     table[i] = pair;
-                    _state.Hand.Remove(best[j]);
+                    _state.Hand.Remove(best2[j]);
                     j++;
                 }
             }
@@ -1177,94 +1198,174 @@ namespace CardFool
 
     // --- Из MPlayer1 ---
 
-    // GetStageCoef (логика без изменений, перенесена в Scorer)
-    // private double GetStageCoef()
-    // {
-    //     if (remainingDeckCount == 0) return 0.228;   // super late game
-    //     if (remainingDeckCount < 9)  return 67;      // late game
-    //     if (remainingDeckCount < 17) return 9.11;    // mid game
-    //     return 1488;                                  // early game
-    // }
 
-    // GetPairAndTrioBuff (переименован в GetPairAndTrioBuff, перенесён в Scorer)
-    // private int GetPairAndTrioBuff(List<SCard> cards)
-    // {
-    //     if (cards.Count == 2) return 13;
-    //     if (cards.Count == 3) return 23;
-    //     return 0;
-    // }
 
-    // GetSuccessBuff (логика без изменений, перенесена в Scorer.GetSuccessBuff)
-    // private double GetSuccessBuff(List<SCard> move) { ... }
 
-    // GetEnemyChanceToDeff (удалена как неиспользуемая)
-    // private double GetEnemyChanceToDeff(List<SCard> attCards) { ... }
+    //public bool Defend(List<SCardPair> table)
+    //    {
+    //        List<SCard> attackCards = new List<SCard>();
+    //        for (int i = 0; i < table.Count; i++)
+    //            attackCards.Add(table[i].Down);
 
-    // GetTrumpPenalty (логика без изменений, перенесена в Scorer)
-    // private int GetTrumpPenalty(List<SCard> cards) { ... }
+    //        _state.IsIAttack = false;
 
-    // GetLastCardPenalty (логика без изменений, перенесена в Scorer)
-    // private int GetLastCardPenalty(List<SCard> cards) { ... }
+        //    bool canDefend = _generator.GetAllDefenceMoves(table, out List<List<SCard>> moves);
+        //    if (!canDefend) return false;
 
-    // GetChaepMoveBuff (переименован в GetCheapMoveBuff, перенесён в Scorer)
-    // private double GetChaepMoveBuff(List<SCard> cards) { ... }
+        //    if (_state.RemainingDeckCount == 0 && _state.Hand.Count + _state.OppCardCount <= 9)
+        //    {
+        //        // Эвристика решает как отбиться
+        //        bool willDefend = ChooseDefMove(moves, table, out List<SCard> best);
 
-    // GetSAveGameCoef (переименован в GetSaveGameCoef, перенесён в Scorer)
-    // private double GetSAveGameCoef() { ... }
+        //        // Решатель оценивает "взять"
+        //        List<SCard> oppHand = _state.OppHand;
+        //        List<SCard> copyTake = new List<SCard>(_state.Hand);
+        //        foreach (SCardPair pair in table)
+        //        {
+        //            copyTake.Add(pair.Down);
+        //            if (pair.Beaten) copyTake.Add(pair.Up);
+        //        }
+        //        int takeScore = _solver.Solve(copyTake, oppHand, false);
 
-    // GetNoSuitCard (переименован в GetNoSuitBuff, перенесён в Scorer)
-    // private int GetNoSuitCard(List<SCard> attCards) { ... }
+        //        if (willDefend)
+        //        {
+        //            // Эвристика хочет отбиться — решатель проверяет
+        //            List<SCard> copyDef = new List<SCard>(_state.Hand);
+        //            foreach (SCard c in best) copyDef.Remove(c);
+        //            int defScore = _solver.Solve(copyDef, oppHand, true);
 
-    // GetCardOnHandBuff (логика без изменений, перенесена в Scorer)
-    // private int GetCardOnHandBuff() { ... }
+        //            // Если "взять" лучше — берём
+        //            if (takeScore > defScore) return false;
+        //        }
+        //        else
+        //        {
+        //            // Эвристика хочет взять — доверяем
+        //            return false;
+        //        }
 
-    // GetCardPriceControl (логика без изменений, перенесена в Scorer)
-    // private int GetCardPriceControl(List<SCard> throw_cards) { ... }
+        //        // Отбиваемся ходом эвристики
+        //        int z = 0;
+        //        for (int i = 0; i < table.Count; i++)
+        //        {
+        //            if (!table[i].Beaten)
+        //            {
+        //                var pair = table[i];
+        //                pair.SetUp(best[z], _state.TrumpSuit);
+        //                table[i] = pair;
+        //                _state.Hand.Remove(best[z]);
+        //                z++;
+        //            }
+        //        }
+        //        return true;
+        //    }
 
-    // GetDifInCardCoef (логика без изменений, перенесена в Scorer)
-    // private double GetDifInCardCoef() { ... }
+        //    bool willDefend2 = ChooseDefMove(moves, table, out List<SCard> best2);
+        //    if (!willDefend2) return false;
 
-    // GetEnemyTrumpPenalty (логика без изменений, перенесена в Scorer)
-    // private int GetEnemyTrumpPenalty(List<SCardPair> table) { ... }
+        //    int j = 0;
+        //    for (int i = 0; i < table.Count; i++)
+        //    {
+        //        if (!table[i].Beaten)
+        //        {
+        //            var pair = table[i];
+        //            pair.SetUp(best2[j], _state.TrumpSuit);
+        //            table[i] = pair;
+        //            _state.Hand.Remove(best2[j]);
+        //            j++;
+        //        }
+        //    }
 
-    // GetCardsToDefCount (переименован в GetSameRankDefBuff, перенесён в Scorer)
-    // private int GetCardsToDefCount(List<SCard> move) { ... }
+        //    return true;
+        //}
 
-    // GetDifInCardRank (переименован в GetDefOptimalBuff, перенесён в Scorer)
-    // private int GetDifInCardRank(List<SCard> move, List<SCardPair> table) { ... }
+        // GetStageCoef (логика без изменений, перенесена в Scorer)
+        // private double GetStageCoef()
+        // {
+        //     if (remainingDeckCount == 0) return 0.228;   // super late game
+        //     if (remainingDeckCount < 9)  return 67;      // late game
+        //     if (remainingDeckCount < 17) return 9.11;    // mid game
+        //     return 1488;                                  // early game
+        // }
 
-    // GetLostPairPenalty (логика без изменений, перенесена в Scorer)
-    // private int GetLostPairPenalty(List<SCard> move) { ... }
+        // GetPairAndTrioBuff (переименован в GetPairAndTrioBuff, перенесён в Scorer)
+        // private int GetPairAndTrioBuff(List<SCard> cards)
+        // {
+        //     if (cards.Count == 2) return 13;
+        //     if (cards.Count == 3) return 23;
+        //     return 0;
+        // }
 
-    // CompareCards (перенесён внутрь GameStateTracker.SortOppHand как лямбда)
-    // private int CompareCards(SCard a, SCard b, Suits trumpSuit) { ... }
+        // GetSuccessBuff (логика без изменений, перенесена в Scorer.GetSuccessBuff)
+        // private double GetSuccessBuff(List<SCard> move) { ... }
 
-    // ChangeListOfCard (переименован в UpdateCardLists, перенесён в GameStateTracker)
-    // private void ChangeListOfCard(List<SCardPair> table, bool IsDefenceSuccesful) { ... }
+        // GetEnemyChanceToDeff (удалена как неиспользуемая)
+        // private double GetEnemyChanceToDeff(List<SCard> attCards) { ... }
 
-    // DeleteFromCardList (переименован в RemoveCardsFromList, перенесён в GameStateTracker)
-    // private void DeleteFromCardList(List<SCard> cardsForDelete, List<SCard> cardsFromDelete) { ... }
+        // GetTrumpPenalty (логика без изменений, перенесена в Scorer)
+        // private int GetTrumpPenalty(List<SCard> cards) { ... }
 
-    // ChangeCountsOfCard (переименован в UpdateCounts, перенесён в GameStateTracker)
-    // private void ChangeCountsOfCard(List<SCardPair> table, bool IsDefenceSuccesful) { ... }
+        // GetLastCardPenalty (логика без изменений, перенесена в Scorer)
+        // private int GetLastCardPenalty(List<SCard> cards) { ... }
 
-    // FindAllAttackMoves (переименован в GetAllAttackMoves, перенесён в MoveGenerator)
-    // private List<List<SCard>> FindAllAttackMoves() { ... }
+        // GetChaepMoveBuff (переименован в GetCheapMoveBuff, перенесён в Scorer)
+        // private double GetChaepMoveBuff(List<SCard> cards) { ... }
 
-    // FindAllThrowMove (переименован в GetAllThrowMoves, перенесён в MoveGenerator)
-    // private List<List<SCard>> FindAllThrowMove(List<SCardPair> table, int limit) { ... }
+        // GetSAveGameCoef (переименован в GetSaveGameCoef, перенесён в Scorer)
+        // private double GetSAveGameCoef() { ... }
 
-    // Gen (переименован в GenerateCombinations, перенесён в MoveGenerator)
-    // private void Gen(...) { ... }
+        // GetNoSuitCard (переименован в GetNoSuitBuff, перенесён в Scorer)
+        // private int GetNoSuitCard(List<SCard> attCards) { ... }
 
-    // FindAllDefMoves (переименован в GetAllDefenceMoves, перенесён в MoveGenerator)
-    // public bool FindAllDefMoves(List<SCardPair> table, List<List<SCard>> moves) { ... }
+        // GetCardOnHandBuff (логика без изменений, перенесена в Scorer)
+        // private int GetCardOnHandBuff() { ... }
 
-    // GenerateCombinations (переименован в GenerateDefenceCombinations, перенесён в MoveGenerator)
-    // public static void GenerateCombinations(...) { ... }
+        // GetCardPriceControl (логика без изменений, перенесена в Scorer)
+        // private int GetCardPriceControl(List<SCard> throw_cards) { ... }
 
-    // GenerateRecursive (переименован в GenerateDefenceRecursive, перенесён в MoveGenerator)
-    // private static void GenerateRecursive(...) { ... }
+        // GetDifInCardCoef (логика без изменений, перенесена в Scorer)
+        // private double GetDifInCardCoef() { ... }
 
-    #endregion
-}
+        // GetEnemyTrumpPenalty (логика без изменений, перенесена в Scorer)
+        // private int GetEnemyTrumpPenalty(List<SCardPair> table) { ... }
+
+        // GetCardsToDefCount (переименован в GetSameRankDefBuff, перенесён в Scorer)
+        // private int GetCardsToDefCount(List<SCard> move) { ... }
+
+        // GetDifInCardRank (переименован в GetDefOptimalBuff, перенесён в Scorer)
+        // private int GetDifInCardRank(List<SCard> move, List<SCardPair> table) { ... }
+
+        // GetLostPairPenalty (логика без изменений, перенесена в Scorer)
+        // private int GetLostPairPenalty(List<SCard> move) { ... }
+
+        // CompareCards (перенесён внутрь GameStateTracker.SortOppHand как лямбда)
+        // private int CompareCards(SCard a, SCard b, Suits trumpSuit) { ... }
+
+        // ChangeListOfCard (переименован в UpdateCardLists, перенесён в GameStateTracker)
+        // private void ChangeListOfCard(List<SCardPair> table, bool IsDefenceSuccesful) { ... }
+
+        // DeleteFromCardList (переименован в RemoveCardsFromList, перенесён в GameStateTracker)
+        // private void DeleteFromCardList(List<SCard> cardsForDelete, List<SCard> cardsFromDelete) { ... }
+
+        // ChangeCountsOfCard (переименован в UpdateCounts, перенесён в GameStateTracker)
+        // private void ChangeCountsOfCard(List<SCardPair> table, bool IsDefenceSuccesful) { ... }
+
+        // FindAllAttackMoves (переименован в GetAllAttackMoves, перенесён в MoveGenerator)
+        // private List<List<SCard>> FindAllAttackMoves() { ... }
+
+        // FindAllThrowMove (переименован в GetAllThrowMoves, перенесён в MoveGenerator)
+        // private List<List<SCard>> FindAllThrowMove(List<SCardPair> table, int limit) { ... }
+
+        // Gen (переименован в GenerateCombinations, перенесён в MoveGenerator)
+        // private void Gen(...) { ... }
+
+        // FindAllDefMoves (переименован в GetAllDefenceMoves, перенесён в MoveGenerator)
+        // public bool FindAllDefMoves(List<SCardPair> table, List<List<SCard>> moves) { ... }
+
+        // GenerateCombinations (переименован в GenerateDefenceCombinations, перенесён в MoveGenerator)
+        // public static void GenerateCombinations(...) { ... }
+
+        // GenerateRecursive (переименован в GenerateDefenceRecursive, перенесён в MoveGenerator)
+        // private static void GenerateRecursive(...) { ... }
+
+        #endregion
+    }
